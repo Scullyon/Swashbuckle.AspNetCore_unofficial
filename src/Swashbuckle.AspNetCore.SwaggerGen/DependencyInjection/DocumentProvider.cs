@@ -1,58 +1,35 @@
-﻿using System.Collections.Generic;
-using System.IO;
-using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
-using Microsoft.OpenApi.Writers;
+using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.Swagger;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
-namespace Microsoft.Extensions.ApiDescriptions
+namespace Microsoft.Extensions.ApiDescriptions;
+
+internal class DocumentProvider(
+    IOptions<SwaggerGeneratorOptions> generatorOptions,
+    IOptions<SwaggerOptions> options,
+    IAsyncSwaggerProvider swaggerProvider) : IDocumentProvider
 {
-    /// <summary>
-    /// This service will be looked up by name from the service collection when using
-    /// the <c>dotnet-getdocument</c> tool from the Microsoft.Extensions.ApiDescription.Server package.
-    /// </summary>
-    internal interface IDocumentProvider
+    private readonly SwaggerGeneratorOptions _generatorOptions = generatorOptions.Value;
+    private readonly SwaggerOptions _options = options.Value;
+    private readonly IAsyncSwaggerProvider _swaggerProvider = swaggerProvider;
+
+    public IEnumerable<string> GetDocumentNames()
+        => _generatorOptions.SwaggerDocs.Keys;
+
+    public async Task GenerateAsync(string documentName, TextWriter writer)
     {
-        IEnumerable<string> GetDocumentNames();
+        // Let UnknownSwaggerDocument or other exception bubble up to caller.
+        var swagger = await _swaggerProvider.GetSwaggerAsync(documentName, host: null, basePath: null);
+        var jsonWriter = new OpenApiJsonWriter(writer);
 
-        Task GenerateAsync(string documentName, TextWriter writer);
-    }
-
-    internal class DocumentProvider : IDocumentProvider
-    {
-        private readonly SwaggerGeneratorOptions _generatorOptions;
-        private readonly SwaggerOptions _options;
-        private readonly IAsyncSwaggerProvider _swaggerProvider;
-
-        public DocumentProvider(
-            IOptions<SwaggerGeneratorOptions> generatorOptions,
-            IOptions<SwaggerOptions> options,
-            IAsyncSwaggerProvider swaggerProvider)
+        if (_options.CustomDocumentSerializer != null)
         {
-            _generatorOptions = generatorOptions.Value;
-            _options = options.Value;
-            _swaggerProvider = swaggerProvider;
+            _options.CustomDocumentSerializer.SerializeDocument(swagger, jsonWriter, _options.OpenApiVersion);
         }
-
-        public IEnumerable<string> GetDocumentNames()
+        else
         {
-            return _generatorOptions.SwaggerDocs.Keys;
-        }
-
-        public async Task GenerateAsync(string documentName, TextWriter writer)
-        {
-            // Let UnknownSwaggerDocument or other exception bubble up to caller.
-            var swagger = await _swaggerProvider.GetSwaggerAsync(documentName, host: null, basePath: null);
-            var jsonWriter = new OpenApiJsonWriter(writer);
-            if (_options.SerializeAsV2)
-            {
-                swagger.SerializeAsV2(jsonWriter);
-            }
-            else
-            {
-                swagger.SerializeAsV3(jsonWriter);
-            }
+            swagger.SerializeAs(_options.OpenApiVersion, jsonWriter);
         }
     }
 }

@@ -1,93 +1,171 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Xml.XPath;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen
+namespace Swashbuckle.AspNetCore.SwaggerGen;
+
+public class XmlCommentsRequestBodyFilter(IReadOnlyDictionary<string, XPathNavigator> xmlDocMembers, SwaggerGeneratorOptions options) : IRequestBodyFilter
 {
-    public class XmlCommentsRequestBodyFilter : IRequestBodyFilter
+    private readonly IReadOnlyDictionary<string, XPathNavigator> _xmlDocMembers = xmlDocMembers;
+    private readonly SwaggerGeneratorOptions _options = options;
+
+    public void Apply(IOpenApiRequestBody requestBody, RequestBodyFilterContext context)
     {
-        private readonly XPathNavigator _xmlNavigator;
+        var bodyParameterDescription = context.BodyParameterDescription;
 
-        public XmlCommentsRequestBodyFilter(XPathDocument xmlDoc)
+        if (bodyParameterDescription is not null)
         {
-            _xmlNavigator = xmlDoc.CreateNavigator();
-        }
-
-        public void Apply(OpenApiRequestBody requestBody, RequestBodyFilterContext context)
-        {
-            var bodyParameterDescription = context.BodyParameterDescription;
-
-            if (bodyParameterDescription == null) return;
-
             var propertyInfo = bodyParameterDescription.PropertyInfo();
-            if (propertyInfo != null)
+            if (propertyInfo is not null)
             {
-                ApplyPropertyTags(requestBody, context, propertyInfo);
-                return;
+                ApplyPropertyTagsForBody(requestBody, context, propertyInfo);
             }
-
-            var parameterInfo = bodyParameterDescription.ParameterInfo();
-            if (parameterInfo != null)
+            else
             {
-                ApplyParamTags(requestBody, context, parameterInfo);
-                return;
-            }
-        }
-
-        private void ApplyPropertyTags(OpenApiRequestBody requestBody, RequestBodyFilterContext context, PropertyInfo propertyInfo)
-        {
-            var propertyMemberName = XmlCommentsNodeNameHelper.GetMemberNameForFieldOrProperty(propertyInfo);
-            var propertyNode = _xmlNavigator.SelectSingleNode($"/doc/members/member[@name='{propertyMemberName}']");
-
-            if (propertyNode == null) return;
-
-            var summaryNode = propertyNode.SelectSingleNode("summary");
-            if (summaryNode != null)
-                requestBody.Description = XmlCommentsTextHelper.Humanize(summaryNode.InnerXml);
-
-            var exampleNode = propertyNode.SelectSingleNode("example");
-            if (exampleNode == null) return;
-
-            foreach (var mediaType in requestBody.Content.Values)
-            {
-                var exampleAsJson = (mediaType.Schema?.ResolveType(context.SchemaRepository) == "string")
-                    ? $"\"{exampleNode.ToString()}\""
-                    : exampleNode.ToString();
-
-                mediaType.Example = OpenApiAnyFactory.CreateFromJson(exampleAsJson);
-            }
-        }
-
-        private void ApplyParamTags(OpenApiRequestBody requestBody, RequestBodyFilterContext context, ParameterInfo parameterInfo)
-        {
-            if (!(parameterInfo.Member is MethodInfo methodInfo)) return;
-
-            // If method is from a constructed generic type, look for comments from the generic type method
-            var targetMethod = methodInfo.DeclaringType.IsConstructedGenericType
-                ? methodInfo.GetUnderlyingGenericTypeMethod()
-                : methodInfo;
-
-            if (targetMethod == null) return;
-
-            var methodMemberName = XmlCommentsNodeNameHelper.GetMemberNameForMethod(targetMethod);
-            var paramNode = _xmlNavigator.SelectSingleNode(
-                $"/doc/members/member[@name='{methodMemberName}']/param[@name='{parameterInfo.Name}']");
-
-            if (paramNode != null)
-            {
-                requestBody.Description = XmlCommentsTextHelper.Humanize(paramNode.InnerXml);
-
-                var example = paramNode.GetAttribute("example", "");
-                if (string.IsNullOrEmpty(example)) return;
-
-                foreach (var mediaType in requestBody.Content.Values)
+                var parameterInfo = bodyParameterDescription.ParameterInfo();
+                if (parameterInfo is not null)
                 {
-                    var exampleAsJson = (mediaType.Schema?.ResolveType(context.SchemaRepository) == "string")
-                        ? $"\"{example}\""
-                        : example;
-
-                    mediaType.Example = OpenApiAnyFactory.CreateFromJson(exampleAsJson);
+                    ApplyParamTagsForBody(requestBody, context, parameterInfo);
                 }
+            }
+        }
+        else
+        {
+            var numberOfFromForm = context.FormParameterDescriptions?.Count() ?? 0;
+            if (requestBody.Content?.Count is 0 || numberOfFromForm is 0)
+            {
+                return;
+            }
+
+            foreach (var formParameter in context.FormParameterDescriptions)
+            {
+                if (formParameter.Name is null || formParameter.PropertyInfo() is not null)
+                {
+                    continue;
+                }
+
+                var parameterFromForm = formParameter.ParameterInfo();
+                if (parameterFromForm is null)
+                {
+                    continue;
+                }
+
+                foreach (var item in requestBody.Content.Values)
+                {
+                    if (item?.Schema?.Properties is { } properties &&
+                        (properties.TryGetValue(formParameter.Name, out var value) || properties.TryGetValue(formParameter.Name.ToCamelCase(), out value)))
+                    {
+                        var (summary, example) = GetParamTags(parameterFromForm);
+                        value.Description ??= summary;
+
+                        if (value is OpenApiSchema concrete && !string.IsNullOrEmpty(example))
+                        {
+                            concrete.Example ??= XmlCommentsExampleHelper.Create(context.SchemaRepository, value, example);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private (string summary, string example) GetPropertyTags(PropertyInfo propertyInfo)
+    {
+        var propertyMemberName = XmlCommentsNodeNameHelper.GetMemberNameForFieldOrProperty(propertyInfo);
+        if (!_xmlDocMembers.TryGetValue(propertyMemberName, out var propertyNode))
+        {
+            return (null, null);
+        }
+
+        string summary = null;
+        var summaryNode = propertyNode.SelectFirstChild("summary");
+        if (summaryNode is not null)
+        {
+            summary = XmlCommentsTextHelper.Humanize(summaryNode.InnerXml, _options?.XmlCommentEndOfLine);
+        }
+
+        var exampleNode = propertyNode.SelectFirstChild("example");
+
+        return (summary, exampleNode?.ToString());
+    }
+
+    private void ApplyPropertyTagsForBody(IOpenApiRequestBody requestBody, RequestBodyFilterContext context, PropertyInfo propertyInfo)
+    {
+        var (summary, example) = GetPropertyTags(propertyInfo);
+
+        if (summary is not null)
+        {
+            requestBody.Description = summary;
+        }
+
+        if (requestBody.Content?.Count is 0)
+        {
+            return;
+        }
+
+        foreach (var mediaType in requestBody.Content.Values)
+        {
+            if (mediaType is OpenApiMediaType concrete)
+            {
+                concrete.Example = XmlCommentsExampleHelper.Create(context.SchemaRepository, concrete.Schema, example);
+            }
+        }
+    }
+
+    private (string summary, string example) GetParamTags(ParameterInfo parameterInfo)
+    {
+        if (parameterInfo.Member is not MethodInfo methodInfo)
+        {
+            return (null, null);
+        }
+
+        var targetMethod = methodInfo.DeclaringType.IsConstructedGenericType
+            ? methodInfo.GetUnderlyingGenericTypeMethod()
+            : methodInfo;
+
+        if (targetMethod is null)
+        {
+            return (null, null);
+        }
+
+        var methodMemberName = XmlCommentsNodeNameHelper.GetMemberNameForMethod(targetMethod);
+
+        if (!_xmlDocMembers.TryGetValue(methodMemberName, out var propertyNode))
+        {
+            return (null, null);
+        }
+
+        var paramNode = propertyNode.SelectFirstChildWithAttribute("param", "name", parameterInfo.Name);
+
+        if (paramNode is null)
+        {
+            return (null, null);
+        }
+
+        var summary = XmlCommentsTextHelper.Humanize(paramNode.InnerXml, _options?.XmlCommentEndOfLine);
+        var example = paramNode.GetAttribute("example");
+
+        return (summary, example);
+    }
+
+    private void ApplyParamTagsForBody(IOpenApiRequestBody requestBody, RequestBodyFilterContext context, ParameterInfo parameterInfo)
+    {
+        var (summary, example) = GetParamTags(parameterInfo);
+
+        if (summary is not null)
+        {
+            requestBody.Description = summary;
+        }
+
+        if (requestBody.Content?.Count is 0 || string.IsNullOrEmpty(example))
+        {
+            return;
+        }
+
+        foreach (var mediaType in requestBody.Content.Values)
+        {
+            if (mediaType is OpenApiMediaType concrete)
+            {
+                concrete.Example = XmlCommentsExampleHelper.Create(context.SchemaRepository, concrete.Schema, example);
             }
         }
     }

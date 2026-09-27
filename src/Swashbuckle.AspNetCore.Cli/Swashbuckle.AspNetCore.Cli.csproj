@@ -3,10 +3,12 @@
   <PropertyGroup>
     <AssemblyName>dotnet-swagger</AssemblyName>
     <Description>Swashbuckle (Swagger) Command Line Tools</Description>
+    <IsPackable>true</IsPackable>
     <OutputType>Exe</OutputType>
     <PackAsTool>true</PackAsTool>
     <PackageId>Swashbuckle.AspNetCore.Cli</PackageId>
-    <TargetFrameworks>netcoreapp2.1;netcoreapp3.0;net5.0;net6.0</TargetFrameworks>
+    <PackageTags>swagger;openapi;documentation;discovery;help;webapi;aspnet;aspnetcore;cli;commandline</PackageTags>
+    <TargetFrameworks>$(DefaultTargetFrameworks)</TargetFrameworks>
     <ToolCommandName>swagger</ToolCommandName>
   </PropertyGroup>
 
@@ -14,8 +16,8 @@
     <ProjectReference Include="..\Swashbuckle.AspNetCore.Swagger\Swashbuckle.AspNetCore.Swagger.csproj" />
   </ItemGroup>
 
-  <ItemGroup Condition=" '$(TargetFramework)' == 'netcoreapp2.1' ">
-    <PackageReference Include="Microsoft.AspNetCore" Version="2.1.0" />
+  <ItemGroup>
+    <InternalsVisibleTo Include="Swashbuckle.AspNetCore.Cli.Test" />
   </ItemGroup>
 
 </Project>

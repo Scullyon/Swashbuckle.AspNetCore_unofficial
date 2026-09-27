@@ -1,28 +1,25 @@
-using System.Collections.Generic;
-using System.Linq;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using Newtonsoft.Json.Linq;
 
-namespace Swashbuckle.AspNetCore.ApiTesting
+namespace Swashbuckle.AspNetCore.ApiTesting;
+
+public sealed class JsonNullValidator : IJsonValidator
 {
-    public class JsonNullValidator : IJsonValidator
+    public bool CanValidate(IOpenApiSchema schema) => schema.Type == JsonSchemaTypes.Null;
+
+    public bool Validate(
+        IOpenApiSchema schema,
+        OpenApiDocument openApiDocument,
+        JToken instance,
+        out IEnumerable<string> errorMessages)
     {
-        public bool CanValidate(OpenApiSchema schema) => schema.Type == "null";
-
-        public bool Validate(
-            OpenApiSchema schema,
-            OpenApiDocument openApiDocument,
-            JToken instance,
-            out IEnumerable<string> errorMessages)
+        if (instance.Type != JTokenType.Null)
         {
-            if (instance.Type != JTokenType.Null)
-            {
-                errorMessages = new[] { $"Path: {instance.Path}. Instance is not of type 'null'" };
-                return false;
-            }
-
-            errorMessages = Enumerable.Empty<string>();
-            return true;
+            errorMessages = [$"Path: {instance.Path}. Instance is not of type 'null'"];
+            return false;
         }
+
+        errorMessages = [];
+        return true;
     }
 }

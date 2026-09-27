@@ -1,65 +1,53 @@
-﻿using System.Collections.Generic;
-using System.IO;
-using System.Linq;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.StaticFiles;
-using Microsoft.Extensions.FileProviders;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
-#if (NETSTANDARD2_0)
-using IWebHostEnvironment = Microsoft.AspNetCore.Hosting.IHostingEnvironment;
-#endif
+namespace Swashbuckle.AspNetCore.ReDoc;
 
-namespace Swashbuckle.AspNetCore.ReDoc
+internal sealed partial class ReDocMiddleware
 {
-    public class ReDocMiddleware
+    private static readonly HashSet<string> AllowedHttpMethods = new(StringComparer.OrdinalIgnoreCase) { HttpMethods.Get, HttpMethods.Head };
+    private static readonly string ReDocVersion = GetReDocVersion();
+
+    private readonly RequestDelegate _next;
+    private readonly ReDocOptions _options;
+    private readonly JsonSerializerOptions _jsonSerializerOptions;
+    private readonly EmbeddedResourceProvider _resourceProvider;
+
+    public ReDocMiddleware(RequestDelegate next, ReDocOptions options)
     {
-        private const string EmbeddedFileNamespace = "Swashbuckle.AspNetCore.ReDoc.node_modules.redoc.bundles";
+        _next = next;
+        _options = options ?? new ReDocOptions();
 
-        private readonly ReDocOptions _options;
-        private readonly StaticFileMiddleware _staticFileMiddleware;
-        private readonly JsonSerializerOptions _jsonSerializerOptions;
-
-        public ReDocMiddleware(
-            RequestDelegate next,
-            IWebHostEnvironment hostingEnv,
-            ILoggerFactory loggerFactory,
-            ReDocOptions options)
+        if (options.JsonSerializerOptions != null)
         {
-            _options = options ?? new ReDocOptions();
-
-            _staticFileMiddleware = CreateStaticFileMiddleware(next, hostingEnv, loggerFactory, options);
-
-            _jsonSerializerOptions = new JsonSerializerOptions();
-
-#if NET6_0
-            _jsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
-#else
-            _jsonSerializerOptions.IgnoreNullValues = true;
-#endif
-            _jsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
-            _jsonSerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, false));
+            _jsonSerializerOptions = options.JsonSerializerOptions;
         }
 
-        public async Task Invoke(HttpContext httpContext)
+        var pathPrefix = options.RoutePrefix.StartsWith('/') ? options.RoutePrefix : $"/{options.RoutePrefix}";
+        _resourceProvider = new(
+            typeof(ReDocMiddleware).Assembly,
+            "Swashbuckle.AspNetCore.ReDoc.node_modules.redoc.bundles",
+            pathPrefix,
+            _options.CacheLifetime);
+    }
+
+    public async Task Invoke(HttpContext httpContext)
+    {
+        if (AllowedHttpMethods.Contains(httpContext.Request.Method))
         {
-            var httpMethod = httpContext.Request.Method;
             var path = httpContext.Request.Path.Value;
 
             // If the RoutePrefix is requested (with or without trailing slash), redirect to index URL
-            if (httpMethod == "GET" && Regex.IsMatch(path, $"^/?{Regex.Escape(_options.RoutePrefix)}/?$",  RegexOptions.IgnoreCase))
+            if (Regex.IsMatch(path, $"^/?{Regex.Escape(_options.RoutePrefix)}/?$", RegexOptions.IgnoreCase))
             {
                 // Use relative redirect to support proxy environments
-                var relativeIndexUrl = string.IsNullOrEmpty(path) || path.EndsWith("/")
+                var relativeIndexUrl =
+                    string.IsNullOrEmpty(path) || path.EndsWith('/')
                     ? "index.html"
                     : $"{path.Split('/').Last()}/index.html";
 
@@ -67,63 +55,172 @@ namespace Swashbuckle.AspNetCore.ReDoc
                 return;
             }
 
-            if (httpMethod == "GET" && Regex.IsMatch(path, $"/{_options.RoutePrefix}/?index.html",  RegexOptions.IgnoreCase))
+            var match = Regex.Match(path, $@"^/{Regex.Escape(_options.RoutePrefix)}/?(index\.(html|css|js))$", RegexOptions.IgnoreCase);
+
+            if (match.Success)
             {
-                await RespondWithIndexHtml(httpContext.Response);
+                await RespondWithFile(httpContext, match.Groups[1].Value);
                 return;
             }
 
-            await _staticFileMiddleware.Invoke(httpContext);
-        }
-
-        private StaticFileMiddleware CreateStaticFileMiddleware(
-            RequestDelegate next,
-            IWebHostEnvironment hostingEnv,
-            ILoggerFactory loggerFactory,
-            ReDocOptions options)
-        {
-            var staticFileOptions = new StaticFileOptions
+            if (await _resourceProvider.TryRespondWithFileAsync(httpContext))
             {
-                RequestPath = string.IsNullOrEmpty(options.RoutePrefix) ? string.Empty : $"/{options.RoutePrefix}",
-                FileProvider = new EmbeddedFileProvider(typeof(ReDocMiddleware).GetTypeInfo().Assembly, EmbeddedFileNamespace),
-            };
-
-            return new StaticFileMiddleware(next, hostingEnv, Options.Create(staticFileOptions), loggerFactory);
-        }
-
-        private void RespondWithRedirect(HttpResponse response, string location)
-        {
-            response.StatusCode = 301;
-            response.Headers["Location"] = location;
-        }
-
-        private async Task RespondWithIndexHtml(HttpResponse response)
-        {
-            response.StatusCode = 200;
-            response.ContentType = "text/html";
-
-            using (var stream = _options.IndexStream())
-            {
-                // Inject arguments before writing to response
-                var htmlBuilder = new StringBuilder(new StreamReader(stream).ReadToEnd());
-                foreach (var entry in GetIndexArguments())
-                {
-                    htmlBuilder.Replace(entry.Key, entry.Value);
-                }
-
-                await response.WriteAsync(htmlBuilder.ToString(), Encoding.UTF8);
+                return;
             }
         }
 
-        private IDictionary<string, string> GetIndexArguments()
+        await _next(httpContext);
+    }
+
+    private static string GetReDocVersion()
+        => typeof(ReDocMiddleware).Assembly
+               .GetCustomAttributes<AssemblyMetadataAttribute>()
+               .Where((p) => p.Key is "ReDocVersion")
+               .Select((p) => p.Value)
+               .DefaultIfEmpty(string.Empty)
+               .FirstOrDefault();
+
+    private static void SetHeaders(HttpResponse response, ReDocOptions options, string etag)
+    {
+        var headers = response.GetTypedHeaders();
+        headers.Append("x-redoc-version", ReDocVersion);
+
+        if (options.CacheLifetime is { } maxAge)
         {
-            return new Dictionary<string, string>()
+            headers.CacheControl = new()
             {
-                { "%(DocumentTitle)", _options.DocumentTitle },
-                { "%(HeadContent)", _options.HeadContent },
-                { "%(SpecUrl)", _options.SpecUrl },
-                { "%(ConfigObject)", JsonSerializer.Serialize(_options.ConfigObject, _jsonSerializerOptions) }
+                MaxAge = maxAge,
+                Private = true,
             };
         }
+        else
+        {
+            headers.CacheControl = new()
+            {
+                NoCache = true,
+                NoStore = true,
+            };
+        }
+
+        headers.ETag = new(etag);
+    }
+
+    private static void RespondWithRedirect(HttpResponse response, string location)
+    {
+        response.StatusCode = StatusCodes.Status301MovedPermanently;
+        response.Headers.Location = location;
+    }
+
+    [GeneratedRegex(@"%\([A-Za-z]+\)")]
+    private static partial Regex IndexArgumentPattern();
+
+    private async Task RespondWithFile(HttpContext context, string fileName)
+    {
+        var cancellationToken = context.RequestAborted;
+        var response = context.Response;
+
+        response.StatusCode = StatusCodes.Status200OK;
+
+        Stream stream;
+
+        // The route is matched case-insensitively, so the file must be selected the same way,
+        // otherwise a request for "INDEX.JS" is answered with the HTML document instead. The
+        // canonical name is used to look the resource up, as manifest names are case-sensitive.
+        if (string.Equals(fileName, "index.css", StringComparison.OrdinalIgnoreCase))
+        {
+            response.ContentType = "text/css";
+            stream = ResourceHelper.GetEmbeddedResource("index.css");
+        }
+        else if (string.Equals(fileName, "index.js", StringComparison.OrdinalIgnoreCase))
+        {
+            response.ContentType = "application/javascript;charset=utf-8";
+            stream = ResourceHelper.GetEmbeddedResource("index.js");
+        }
+        else
+        {
+            response.ContentType = "text/html;charset=utf-8";
+            stream = _options.IndexStream();
+        }
+
+        using (stream)
+        {
+            // Inject arguments before writing to response
+            string template;
+
+            using (var reader = new StreamReader(stream))
+            {
+                template = await reader.ReadToEndAsync(cancellationToken);
+            }
+
+            var arguments = GetIndexArguments();
+
+            // Single pass over the original template: replacement values are never re-scanned for
+            // further placeholder matches, so a value that happens to look like another placeholder
+            // token cannot be substituted a second time.
+            var text = IndexArgumentPattern().Replace(
+                template,
+                (match) => arguments.TryGetValue(match.Value, out var value) ? value : match.Value);
+
+            var etag = GetETag(text);
+
+            var ifNoneMatch = context.Request.Headers.IfNoneMatch;
+
+            if (ifNoneMatch == etag)
+            {
+                response.StatusCode = StatusCodes.Status304NotModified;
+                return;
+            }
+
+            SetHeaders(response, _options, etag);
+
+            if (HttpMethods.IsGet(context.Request.Method))
+            {
+                await response.WriteAsync(text, Encoding.UTF8, cancellationToken);
+            }
+            else if (HttpMethods.IsHead(context.Request.Method))
+            {
+                // HEAD response must have an empty body, but have correct Content-Length header
+                response.ContentLength = Encoding.UTF8.GetByteCount(text);
+            }
+        }
+
+        static string GetETag(string text)
+        {
+            var buffer = Encoding.UTF8.GetBytes(text);
+            var hash = SHA1.HashData(buffer);
+
+            return $"\"{Convert.ToBase64String(hash)}\"";
+        }
+    }
+
+    [UnconditionalSuppressMessage(
+        "AOT",
+        "IL2026:RequiresUnreferencedCode",
+        Justification = "Method is only called if the user provides their own custom JsonSerializerOptions.")]
+    [UnconditionalSuppressMessage(
+        "AOT",
+        "IL3050:RequiresDynamicCode",
+        Justification = "Method is only called if the user provides their own custom JsonSerializerOptions.")]
+    private Dictionary<string, string> GetIndexArguments()
+    {
+        string configObject = null;
+        string specUrl = null;
+
+        if (_jsonSerializerOptions is null)
+        {
+            configObject = JsonSerializer.Serialize(_options.ConfigObject, ReDocOptionsJsonContext.Default.ConfigObject);
+            specUrl = JsonSerializer.Serialize(_options.SpecUrl ?? string.Empty, ReDocOptionsJsonContext.Default.String);
+        }
+
+        configObject ??= JsonSerializer.Serialize(_options.ConfigObject, _jsonSerializerOptions);
+        specUrl ??= JsonSerializer.Serialize(_options.SpecUrl ?? string.Empty, _jsonSerializerOptions);
+
+        return new Dictionary<string, string>()
+        {
+            { "%(DocumentTitle)", System.Net.WebUtility.HtmlEncode(_options.DocumentTitle) },
+            { "%(HeadContent)", _options.HeadContent },
+            { "%(SpecUrl)", specUrl },
+            { "%(ConfigObject)", configObject },
+        };
     }
 }

@@ -1,41 +1,93 @@
-﻿using System;
+﻿using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Swashbuckle.AspNetCore.ReDoc;
 
-namespace Microsoft.AspNetCore.Builder
+namespace Microsoft.AspNetCore.Builder;
+
+public static class ReDocBuilderExtensions
 {
-    public static class ReDocBuilderExtensions
+    /// <summary>
+    /// Register the Redoc middleware with provided options
+    /// </summary>
+    public static IApplicationBuilder UseReDoc(this IApplicationBuilder app, ReDocOptions options)
+        => app.UseMiddleware<ReDocMiddleware>(options);
+
+    /// <summary>
+    /// Register the Redoc middleware with optional setup action for DI-injected options
+    /// </summary>
+    public static IApplicationBuilder UseReDoc(
+        this IApplicationBuilder app,
+        Action<ReDocOptions> setupAction = null)
     {
-        /// <summary>
-        /// Register the ReDoc middleware with provided options
-        /// </summary>
-        public static IApplicationBuilder UseReDoc(this IApplicationBuilder app, ReDocOptions options)
+        var options = ResolveOptions(app.ApplicationServices, setupAction);
+
+        EnsureDefaultSpecUrl(options);
+
+        return app.UseReDoc(options);
+    }
+
+    /// <summary>
+    /// Maps the Redoc middleware to the specified endpoint route.
+    /// </summary>
+    /// <param name="endpoints">Endpoint route builder to which the Redoc middleware will be mapped.</param>
+    /// <param name="routePrefix">Optional route prefix for the Redoc endpoint. If not provided, the <see cref="ReDocOptions.RoutePrefix"/> value is used.</param>
+    /// <param name="setupAction">Optional setup action to configure the Redoc options.</param>
+    /// <returns>An <see cref="IEndpointConventionBuilder"/> that can be used to further configure the endpoint.</returns>
+    public static IEndpointConventionBuilder MapReDoc(
+        this IEndpointRouteBuilder endpoints,
+        string routePrefix = null,
+        Action<ReDocOptions> setupAction = null)
+    {
+        var options = ResolveOptions(endpoints.ServiceProvider, setupAction);
+
+        if (routePrefix != null)
         {
-            return app.UseMiddleware<ReDocMiddleware>(options);
+            options.RoutePrefix = routePrefix;
         }
 
-        /// <summary>
-        /// Register the ReDoc middleware with optional setup action for DI-injected options
-        /// </summary>
-        public static IApplicationBuilder UseReDoc(
-            this IApplicationBuilder app,
-            Action<ReDocOptions> setupAction = null)
+        EnsureDefaultSpecUrl(options);
+
+        var pipeline = endpoints.CreateApplicationBuilder()
+            .UseReDoc(options)
+            .Build();
+
+        return endpoints.Map(GetRoutePattern(options.RoutePrefix), async (context) =>
         {
-            ReDocOptions options;
-            using (var scope = app.ApplicationServices.CreateScope())
-            {
-                options = scope.ServiceProvider.GetRequiredService<IOptionsSnapshot<ReDocOptions>>().Value;
-                setupAction?.Invoke(options);
-            }
+            var endpoint = context.GetEndpoint();
+            context.SetEndpoint(null);
 
-            // To simplify the common case, use a default that will work with the SwaggerMiddleware defaults
-            if (options.SpecUrl == null)
+            try
             {
-                options.SpecUrl = "../swagger/v1/swagger.json";
+                await pipeline(context);
             }
+            finally
+            {
+                context.SetEndpoint(endpoint);
+            }
+        });
+    }
 
-            return app.UseReDoc(options);
-        }
+    private static ReDocOptions ResolveOptions(IServiceProvider serviceProvider, Action<ReDocOptions> setupAction)
+    {
+        using var scope = serviceProvider.CreateScope();
+        var options = scope.ServiceProvider.GetRequiredService<IOptionsSnapshot<ReDocOptions>>().Value;
+        setupAction?.Invoke(options);
+        return options;
+    }
+
+    private static void EnsureDefaultSpecUrl(ReDocOptions options)
+    {
+        // To simplify the common case, use a default that will work with the SwaggerMiddleware defaults
+        options.SpecUrl ??= "../swagger/v1/swagger.json";
+    }
+
+    private static string GetRoutePattern(string routePrefix)
+    {
+        var sanitizedRoutePrefix = routePrefix?.Trim('/');
+        return string.IsNullOrEmpty(sanitizedRoutePrefix)
+            ? "{**path}"
+            : $"{sanitizedRoutePrefix}/{{**path}}";
     }
 }

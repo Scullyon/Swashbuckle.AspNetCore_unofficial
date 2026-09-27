@@ -1,126 +1,64 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Reflection;
+﻿using System.Reflection;
 using Microsoft.AspNetCore.Mvc;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen
+namespace Swashbuckle.AspNetCore.SwaggerGen;
+
+public static class MemberInfoExtensions
 {
-    public static class MemberInfoExtensions
+    public static IEnumerable<object> GetInlineAndMetadataAttributes(this MemberInfo memberInfo)
     {
-        private const string NullableAttributeFullTypeName = "System.Runtime.CompilerServices.NullableAttribute";
-        private const string NullableFlagsFieldName = "NullableFlags";
-        private const string NullableContextAttributeFullTypeName = "System.Runtime.CompilerServices.NullableContextAttribute";
-        private const string FlagFieldName = "Flag";
+        var attributes = memberInfo.GetCustomAttributes(true)
+            .ToList();
 
-        public static IEnumerable<object> GetInlineAndMetadataAttributes(this MemberInfo memberInfo)
+        var metadataTypeAttribute = memberInfo.DeclaringType.GetCustomAttributes(true)
+            .OfType<ModelMetadataTypeAttribute>()
+            .FirstOrDefault();
+
+        var metadataMemberInfo = metadataTypeAttribute?.MetadataType.GetMember(memberInfo.Name)
+            .FirstOrDefault();
+
+        if (metadataMemberInfo != null)
         {
-            var attributes = memberInfo.GetCustomAttributes(true)
-                .ToList();
-
-            var metadataTypeAttribute = memberInfo.DeclaringType.GetCustomAttributes(true)
-                .OfType<ModelMetadataTypeAttribute>()
-                .FirstOrDefault();
-
-            var metadataMemberInfo = metadataTypeAttribute?.MetadataType.GetMember(memberInfo.Name)
-                .FirstOrDefault();
-
-            if (metadataMemberInfo != null)
-            {
-                attributes.AddRange(metadataMemberInfo.GetCustomAttributes(true));
-            }
-
-            return attributes;
+            attributes.AddRange(metadataMemberInfo.GetCustomAttributes(true));
         }
 
-        public static bool IsNonNullableReferenceType(this MemberInfo memberInfo)
+        return attributes;
+    }
+
+    private static NullabilityInfo GetNullabilityInfo(this MemberInfo memberInfo)
+    {
+        var context = new NullabilityInfoContext();
+
+        return memberInfo switch
         {
-            var memberType = memberInfo.MemberType == MemberTypes.Field
-                ? ((FieldInfo)memberInfo).FieldType
-                : ((PropertyInfo)memberInfo).PropertyType;
+            FieldInfo fieldInfo => context.Create(fieldInfo),
+            PropertyInfo propertyInfo => context.Create(propertyInfo),
+            EventInfo eventInfo => context.Create(eventInfo),
+            _ => throw new InvalidOperationException($"MemberInfo type {memberInfo.MemberType} is not supported.")
+        };
+    }
 
-            if (memberType.IsValueType) return false;
+    public static bool IsNonNullableReferenceType(this MemberInfo memberInfo)
+    {
+        var nullableInfo = GetNullabilityInfo(memberInfo);
+        return nullableInfo.ReadState == NullabilityState.NotNull;
+    }
 
-            var nullableAttribute = memberInfo.GetNullableAttribute();
+    public static bool IsDictionaryValueNonNullable(this MemberInfo memberInfo)
+    {
+        var nullableInfo = GetNullabilityInfo(memberInfo);
 
-            if (nullableAttribute == null)
-            {
-                return memberInfo.GetNullableFallbackValue();
-            }
-
-            if (nullableAttribute.GetType().GetField(NullableFlagsFieldName) is FieldInfo field &&
-                field.GetValue(nullableAttribute) is byte[] flags &&
-                flags.Length >= 1 && flags[0] == 1)
-            {
-                return true;
-            }
-
-            return false;
-        }
-
-        public static bool IsDictionaryValueNonNullable(this MemberInfo memberInfo)
+        // Assume one generic argument means TKey and TValue are the same type.
+        // Assume two generic arguments match TKey and TValue for a dictionary.
+        // A better solution would be to inspect the type declaration (base types,
+        // interfaces, etc.) to determine if the type is a dictionary, but the
+        // nullability information is not available to be able to do that.
+        // See https://stackoverflow.com/q/75786306/1064169.
+        return nullableInfo.GenericTypeArguments.Length switch
         {
-            var memberType = memberInfo.MemberType == MemberTypes.Field
-                ? ((FieldInfo)memberInfo).FieldType
-                : ((PropertyInfo)memberInfo).PropertyType;
-
-            if (memberType.IsValueType) return false;
-
-            var nullableAttribute = memberInfo.GetNullableAttribute();
-
-            if (nullableAttribute == null)
-            {
-                return memberInfo.GetNullableFallbackValue();
-            }
-
-            if (nullableAttribute.GetType().GetField(NullableFlagsFieldName) is FieldInfo field &&
-                field.GetValue(nullableAttribute) is byte[] flags &&
-                flags.Length == 3 && flags[2] == 1)
-            {
-                return true;
-            }
-
-            return false;
-        }
-
-        private static object GetNullableAttribute(this MemberInfo memberInfo)
-        {
-            var nullableAttribute = memberInfo.GetCustomAttributes()
-                .Where(attr => string.Equals(attr.GetType().FullName, NullableAttributeFullTypeName))
-                .FirstOrDefault();
-
-            return nullableAttribute;
-        }
-
-        private static bool GetNullableFallbackValue(this MemberInfo memberInfo)
-        {
-            var declaringTypes = memberInfo.DeclaringType.IsNested
-                ? new Type[] { memberInfo.DeclaringType, memberInfo.DeclaringType.DeclaringType }
-                : new Type[] { memberInfo.DeclaringType };
-
-            foreach (var declaringType in declaringTypes)
-            {
-                var attributes = (IEnumerable<object>)declaringType.GetCustomAttributes(false);
-
-                var nullableContext = attributes
-                .Where(attr => string.Equals(attr.GetType().FullName, NullableContextAttributeFullTypeName))
-                .FirstOrDefault();
-
-                if (nullableContext != null)
-                {
-                    if (nullableContext.GetType().GetField(FlagFieldName) is FieldInfo field &&
-                    field.GetValue(nullableContext) is byte flag && flag == 1)
-                    {
-                        return true;
-                    }
-                    else
-                    {
-                        return false;
-                    }
-                }
-            }
-
-            return false;
-        }
+            1 => nullableInfo.GenericTypeArguments[0].ReadState == NullabilityState.NotNull,
+            2 => nullableInfo.GenericTypeArguments[1].ReadState == NullabilityState.NotNull,
+            _ => false,
+        };
     }
 }

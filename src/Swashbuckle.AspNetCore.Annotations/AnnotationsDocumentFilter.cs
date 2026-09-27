@@ -1,51 +1,55 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using Microsoft.AspNetCore.Mvc.Controllers;
-using Microsoft.OpenApi.Models;
+﻿using Microsoft.AspNetCore.Mvc.Controllers;
+using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
-namespace Swashbuckle.AspNetCore.Annotations
+namespace Swashbuckle.AspNetCore.Annotations;
+
+public class AnnotationsDocumentFilter : IDocumentFilter
 {
-    public class AnnotationsDocumentFilter : IDocumentFilter
+    public void Apply(OpenApiDocument swaggerDoc, DocumentFilterContext context)
     {
-        public void Apply(OpenApiDocument swaggerDoc, DocumentFilterContext context)
+        swaggerDoc.Tags ??= new SortedSet<OpenApiTag>(OpenApiTagComparer.Instance);
+
+        // Collect (unique) controller names and custom attributes in a dictionary
+        var controllerNamesAndAttributes = context.ApiDescriptions
+            .Select(apiDesc => apiDesc.ActionDescriptor as ControllerActionDescriptor)
+            .Where(actionDesc => actionDesc != null)
+            .GroupBy(actionDesc => actionDesc.ControllerName)
+            .Select(group => new KeyValuePair<string, IEnumerable<object>>(group.Key, group.First().ControllerTypeInfo.GetCustomAttributes(true)));
+
+        foreach (var entry in controllerNamesAndAttributes)
         {
-            if (swaggerDoc.Tags == null)
-                swaggerDoc.Tags = new List<OpenApiTag>();
+            ApplySwaggerTagAttribute(swaggerDoc, entry.Key, entry.Value);
+        }
+    }
 
-            // Collect (unique) controller names and custom attributes in a dictionary
-            var controllerNamesAndAttributes = context.ApiDescriptions
-                .Select(apiDesc => apiDesc.ActionDescriptor as ControllerActionDescriptor)
-                .Where(actionDesc => actionDesc != null)
-                .GroupBy(actionDesc => actionDesc.ControllerName)
-                .Select(group => new KeyValuePair<string, IEnumerable<object>>(group.Key, group.First().ControllerTypeInfo.GetCustomAttributes(true)));
+    private static void ApplySwaggerTagAttribute(
+        OpenApiDocument document,
+        string controllerName,
+        IEnumerable<object> customAttributes)
+    {
+        var swaggerTagAttribute = customAttributes
+            .OfType<SwaggerTagAttribute>()
+            .FirstOrDefault();
 
-            foreach (var entry in controllerNamesAndAttributes)
-            {
-                ApplySwaggerTagAttribute(swaggerDoc, entry.Key, entry.Value);
-            }
+        if (swaggerTagAttribute is null)
+        {
+            return;
         }
 
-        private void ApplySwaggerTagAttribute(
-            OpenApiDocument swaggerDoc,
-            string controllerName,
-            IEnumerable<object> customAttributes)
+        var tag = document.Tags.FirstOrDefault((p) => p?.Name == controllerName);
+
+        if (tag is null)
         {
-            var swaggerTagAttribute = customAttributes
-                .OfType<SwaggerTagAttribute>()
-                .FirstOrDefault();
+            tag = new() { Name = controllerName };
+            document.Tags.Add(tag);
+        }
 
-            if (swaggerTagAttribute == null) return;
+        tag.Description ??= swaggerTagAttribute.Description;
 
-            swaggerDoc.Tags.Add(new OpenApiTag
-            {
-                Name = controllerName,
-                Description = swaggerTagAttribute.Description,
-                ExternalDocs = (swaggerTagAttribute.ExternalDocsUrl != null)
-                    ? new OpenApiExternalDocs { Url = new Uri(swaggerTagAttribute.ExternalDocsUrl) }
-                    : null
-            });
+        if (swaggerTagAttribute.ExternalDocsUrl is { } url)
+        {
+            tag.ExternalDocs ??= new OpenApiExternalDocs { Url = new(url) };
         }
     }
 }

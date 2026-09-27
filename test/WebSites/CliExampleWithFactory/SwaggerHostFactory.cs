@@ -1,12 +1,7 @@
-﻿using Microsoft.Extensions.Hosting;
+﻿namespace CliExampleWithFactory;
 
-namespace CliExampleWithFactory
+public class SwaggerHostFactory
 {
-    public class SwaggerHostFactory
-    {
-        public static IHost CreateHost()
-        {
-            return Program.CreateHostBuilder(new string[0]).Build();
-        }
-    }
+    public static IHost CreateHost()
+        => Program.CreateHostBuilder([]).Build();
 }

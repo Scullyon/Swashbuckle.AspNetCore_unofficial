@@ -1,57 +1,62 @@
-using System.Linq;
-using System.Collections.Generic;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using Newtonsoft.Json.Linq;
 
-namespace Swashbuckle.AspNetCore.ApiTesting
+namespace Swashbuckle.AspNetCore.ApiTesting;
+
+public sealed class JsonNumberValidator : IJsonValidator
 {
-    public class JsonNumberValidator : IJsonValidator
+    public bool CanValidate(IOpenApiSchema schema) => schema.Type is { } type && type.HasFlag(JsonSchemaTypes.Number);
+
+    public bool Validate(
+        IOpenApiSchema schema,
+        OpenApiDocument openApiDocument,
+        JToken instance,
+        out IEnumerable<string> errorMessages)
     {
-        public bool CanValidate(OpenApiSchema schema) => schema.Type == "number";
-
-        public bool Validate(
-            OpenApiSchema schema,
-            OpenApiDocument openApiDocument,
-            JToken instance,
-            out IEnumerable<string> errorMessages)
+        if (instance.Type is not JTokenType.Float and not JTokenType.Integer)
         {
-            if (!new[] { JTokenType.Float, JTokenType.Integer }.Contains(instance.Type))
-            {
-                errorMessages = new[] { $"Path: {instance.Path}. Instance is not of type 'number'" };
-                return false;
-            }
-
-            var numberValue = instance.Value<decimal>();
-            var errorMessagesList = new List<string>();
-
-            // multipleOf
-            if (schema.MultipleOf.HasValue && ((numberValue % schema.MultipleOf.Value) != 0))
-                errorMessagesList.Add($"Path: {instance.Path}. Number is not evenly divisible by multipleOf");
-
-            // maximum & exclusiveMaximum
-            if (schema.Maximum.HasValue)
-            {
-                var exclusiveMaximum = schema.ExclusiveMaximum.HasValue ? schema.ExclusiveMaximum.Value : false;
-
-                if (exclusiveMaximum && (numberValue >= schema.Maximum.Value))
-                    errorMessagesList.Add($"Path: {instance.Path}. Number is greater than, or equal to, maximum");
-                else if (numberValue > schema.Maximum.Value)
-                    errorMessagesList.Add($"Path: {instance.Path}. Number is greater than maximum");
-            }
-
-            // minimum & exclusiveMinimum
-            if (schema.Minimum.HasValue)
-            {
-                var exclusiveMinimum = schema.ExclusiveMinimum.HasValue ? schema.ExclusiveMinimum.Value : false;
-
-                if (exclusiveMinimum && (numberValue <= schema.Minimum.Value))
-                    errorMessagesList.Add($"Path: {instance.Path}. Number is less than, or equal to, minimum");
-                else if (numberValue < schema.Minimum.Value)
-                    errorMessagesList.Add($"Path: {instance.Path}. Number is less than minimum");
-            }
-
-            errorMessages = errorMessagesList;
-            return !errorMessages.Any();
+            errorMessages = [$"Path: {instance.Path}. Instance is not of type 'number'"];
+            return false;
         }
+
+        var numberValue = instance.Value<decimal>();
+        var errors = new List<string>();
+
+        // multipleOf
+        if (schema.MultipleOf is { } multipleOf && (numberValue % multipleOf) != 0)
+        {
+            errors.Add($"Path: {instance.Path}. Number is not evenly divisible by multipleOf");
+        }
+
+        if (schema.ExclusiveMaximum is { } exclusiveMaximum &&
+            decimal.TryParse(exclusiveMaximum, out var exclusiveMaximumValue) &&
+            numberValue >= exclusiveMaximumValue)
+        {
+            errors.Add($"Path: {instance.Path}. Number is greater than, or equal to, maximum");
+        }
+
+        if (schema.Maximum is { } maximum &&
+            decimal.TryParse(maximum, out var maximumValue) &&
+            numberValue > maximumValue)
+        {
+            errors.Add($"Path: {instance.Path}. Number is greater than maximum");
+        }
+
+        if (schema.ExclusiveMinimum is { } exclusiveMinimum &&
+            decimal.TryParse(exclusiveMinimum, out var exclusiveMinimumValue) &&
+            numberValue <= exclusiveMinimumValue)
+        {
+            errors.Add($"Path: {instance.Path}. Number is less than, or equal to, minimum");
+        }
+
+        if (schema.Minimum is { } minimum &&
+            decimal.TryParse(minimum, out var minimumValue) &&
+            numberValue < minimumValue)
+        {
+            errors.Add($"Path: {instance.Path}. Number is less than minimum");
+        }
+
+        errorMessages = errors;
+        return !errorMessages.Any();
     }
 }

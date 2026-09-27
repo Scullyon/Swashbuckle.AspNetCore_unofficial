@@ -1,61 +1,436 @@
-﻿using System.Net;
-using System.Threading.Tasks;
-using Xunit;
+﻿using System.IO.Compression;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Swashbuckle.AspNetCore.ReDoc;
 using ReDocApp = ReDoc;
 
-namespace Swashbuckle.AspNetCore.IntegrationTests
+namespace Swashbuckle.AspNetCore.IntegrationTests;
+
+[Collection("TestSite")]
+public class ReDocIntegrationTests(ITestOutputHelper outputHelper)
 {
-    public class ReDocIntegrationTests
+    private const string EmptyStringSha256Hash = "2jmj7l5rSw0yVb/vlWAYkK/YBwk=";
+
+    [Fact]
+    public async Task RoutePrefix_RedirectsToIndexUrl()
     {
-        [Fact]
-        public async Task RoutePrefix_RedirectsToIndexUrl()
+        var site = new TestSite(typeof(ReDocApp.Startup), outputHelper);
+        using var client = site.BuildClient();
+
+        using var response = await client.GetAsync("/api-docs", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.MovedPermanently, response.StatusCode);
+        Assert.Equal("api-docs/index.html", response.Headers.Location.ToString());
+    }
+
+    [Fact]
+    public async Task IndexUrl_HeadRequest_ReturnsMetadata()
+    {
+        var site = new TestSite(typeof(ReDocApp.Startup), outputHelper);
+        using var client = site.BuildClient();
+        using var request = new HttpRequestMessage(HttpMethod.Head, "/api-docs/index.html");
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.Content.Headers.ContentLength > 0, "Content-Length should not be zero.");
+        Assert.Empty(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task IndexUrl_ReturnsEmbeddedVersionOfTheRedocUI()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var site = new TestSite(typeof(ReDocApp.Startup), outputHelper);
+        using var client = site.BuildClient();
+
+        using var htmlResponse = await client.GetAsync("/api-docs/index.html", cancellationToken);
+        using var cssResponse = await client.GetAsync("/api-docs/index.css", cancellationToken);
+        using var jsResponse = await client.GetAsync("/api-docs/redoc.standalone.js", cancellationToken);
+
+        AssertResource(htmlResponse);
+        AssertResource(cssResponse);
+        AssertResource(jsResponse);
+
+        static void AssertResource(HttpResponseMessage response)
         {
-            var client = new TestSite(typeof(ReDocApp.Startup)).BuildClient();
-
-            var response = await client.GetAsync("/api-docs");
-
-            Assert.Equal(HttpStatusCode.MovedPermanently, response.StatusCode);
-            Assert.Equal("api-docs/index.html", response.Headers.Location.ToString());
-        }
-
-        [Fact]
-        public async Task IndexUrl_ReturnsEmbeddedVersionOfTheReDocUI()
-        {
-            var client = new TestSite(typeof(ReDocApp.Startup)).BuildClient();
-
-            var indexResponse = await client.GetAsync("/api-docs/index.html");
-            var jsResponse = await client.GetAsync("/api-docs/redoc.standalone.js");
-
-            var indexContent = await indexResponse.Content.ReadAsStringAsync();
-            Assert.Contains("Redoc.init", indexContent);
-            Assert.Equal(HttpStatusCode.OK, jsResponse.StatusCode);
-        }
-
-        [Fact]
-        public async Task IndexUrl_IgnoresUrlCase()
-        {
-            var client = new TestSite(typeof(ReDocApp.Startup)).BuildClient();
-
-            var indexResponse = await client.GetAsync("/Api-Docs/index.html");
-            var jsResponse = await client.GetAsync("/Api-Docs/redoc.standalone.js");
-
-            var indexContent = await indexResponse.Content.ReadAsStringAsync();
-            Assert.Contains("Redoc.init", indexContent);
-            Assert.Equal(HttpStatusCode.OK, jsResponse.StatusCode);
-        }
-
-        [Theory]
-        [InlineData("/redoc/1.0/index.html", "/swagger/1.0/swagger.json")]
-        [InlineData("/redoc/2.0/index.html", "/swagger/2.0/swagger.json")]
-        public async Task ReDocMiddleware_CanBeConfiguredMultipleTimes(string redocUrl, string swaggerPath)
-        {
-            var client = new TestSite(typeof(MultipleVersions.Startup)).BuildClient();
-
-            var response = await client.GetAsync(redocUrl);
-            var content = await response.Content.ReadAsStringAsync();
-
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            Assert.Contains(swaggerPath, content);
+            Assert.NotNull(response.Headers.ETag);
+            Assert.False(response.Headers.ETag.IsWeak);
+            Assert.NotEmpty(response.Headers.ETag.Tag);
+            Assert.NotNull(response.Headers.CacheControl);
+            Assert.True(response.Headers.CacheControl.Private);
+            Assert.Equal(TimeSpan.Zero, response.Headers.CacheControl.MaxAge);
         }
+    }
+
+
+    [Theory]
+    [InlineData("/swagger/v1/swagger.json", "application/json")]
+    [InlineData("/swagger/v1/swagger.yaml", "text/yaml")]
+    [InlineData("/swagger/v1/swagger.yml", "text/yaml")]
+    [InlineData("/api-docs/index.html", "text/html")]
+    public async Task MapSwaggerAndMapReDoc_ReturnExpectedEndpoints(string path, string mediaType)
+    {
+        var client = new WebApplicationFactory<WebApi.Map.Program>().CreateClient();
+
+        var response = await client.GetAsync(path, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(mediaType, response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Theory]
+    [InlineData("/redoc-auth/index.html")]
+    public async Task MapReDoc_RequireAuthorization_ReturnUnauthorized(string path)
+    {
+        var client = new WebApplicationFactory<WebApi.Map.Program>().CreateClient();
+        var response = await client.GetAsync(path, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+
+    [Fact]
+    public async Task RedocMiddleware_ReturnsInitializerScript()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var site = new TestSite(typeof(ReDocApp.Startup), outputHelper);
+        using var client = site.BuildClient();
+
+        var requestUri = "/api-docs/index.js";
+
+        using var response = await client.GetAsync(requestUri, cancellationToken);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Redoc.init", content);
+        Assert.DoesNotContain("%(DocumentTitle)", content);
+        Assert.DoesNotContain("%(HeadContent)", content);
+        Assert.DoesNotContain("%(SpecUrl)", content);
+        Assert.DoesNotContain("%(ConfigObject)", content);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+        request.Headers.IfNoneMatch.Add(response.Headers.ETag);
+
+        using var cached = await client.SendAsync(request, cancellationToken);
+
+        Assert.Equal(HttpStatusCode.NotModified, cached.StatusCode);
+
+        using var stream = await cached.Content.ReadAsStreamAsync(cancellationToken);
+        Assert.Equal(0, stream.Length);
+    }
+
+    [Fact]
+    public async Task IndexUrl_IgnoresUrlCase()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var site = new TestSite(typeof(ReDocApp.Startup), outputHelper);
+        using var client = site.BuildClient();
+
+        using var htmlResponse = await client.GetAsync("/Api-Docs/index.html", cancellationToken);
+        using var cssResponse = await client.GetAsync("/Api-Docs/index.css", cancellationToken);
+        using var jsInitResponse = await client.GetAsync("/Api-Docs/index.js", cancellationToken);
+        using var jsRedocResponse = await client.GetAsync("/Api-Docs/redoc.standalone.js", cancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, htmlResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, cssResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, jsInitResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, jsRedocResponse.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("/redoc/1.0/index.html", "/redoc/1.0/index.js", "/swagger/1.0/swagger.json")]
+    [InlineData("/redoc/2.0/index.html", "/redoc/2.0/index.js", "/swagger/2.0/swagger.json")]
+    public async Task RedocMiddleware_CanBeConfiguredMultipleTimes(string htmlUrl, string jsUrl, string swaggerPath)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var site = new TestSite(typeof(MultipleVersions.Startup), outputHelper);
+        using var client = site.BuildClient();
+
+        using var htmlResponse = await client.GetAsync(htmlUrl, cancellationToken);
+        using var jsResponse = await client.GetAsync(jsUrl, cancellationToken);
+        var content = await jsResponse.Content.ReadAsStringAsync(cancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, htmlResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, jsResponse.StatusCode);
+        Assert.Contains(swaggerPath, content);
+    }
+
+    [Fact]
+    public void ReDocOptions_Extensions()
+    {
+        // Arrange
+        var options = new ReDocOptions();
+
+        // Act and Assert
+        Assert.NotNull(options.IndexStream);
+        Assert.Null(options.JsonSerializerOptions);
+        Assert.Null(options.SpecUrl);
+        Assert.Equal("API Docs", options.DocumentTitle);
+        Assert.Equal(string.Empty, options.HeadContent);
+        Assert.Equal("api-docs", options.RoutePrefix);
+
+        Assert.NotNull(options.ConfigObject);
+        Assert.NotNull(options.ConfigObject.AdditionalItems);
+        Assert.Empty(options.ConfigObject.AdditionalItems);
+        Assert.Null(options.ConfigObject.ScrollYOffset);
+        Assert.Equal("all", options.ConfigObject.ExpandResponses);
+        Assert.False(options.ConfigObject.DisableSearch);
+        Assert.False(options.ConfigObject.HideDownloadButton);
+        Assert.False(options.ConfigObject.HideHostname);
+        Assert.False(options.ConfigObject.HideLoading);
+        Assert.False(options.ConfigObject.NativeScrollbars);
+        Assert.False(options.ConfigObject.NoAutoAuth);
+        Assert.False(options.ConfigObject.OnlyRequiredInSamples);
+        Assert.False(options.ConfigObject.PathInMiddlePanel);
+        Assert.False(options.ConfigObject.RequiredPropsFirst);
+        Assert.False(options.ConfigObject.SortPropsAlphabetically);
+        Assert.False(options.ConfigObject.UntrustedSpec);
+
+        // Act
+        options.DisableSearch();
+        options.EnableUntrustedSpec();
+        options.ExpandResponses("response");
+        options.HideDownloadButton();
+        options.HideHostname();
+        options.HideLoading();
+        options.InjectStylesheet("custom.css", "screen and (max-width: 700px)");
+        options.NativeScrollbars();
+        options.NoAutoAuth();
+        options.OnlyRequiredInSamples();
+        options.PathInMiddlePanel();
+        options.RequiredPropsFirst();
+        options.ScrollYOffset(42);
+        options.SortPropsAlphabetically();
+        options.SpecUrl("spec.json");
+
+        // Assert
+        Assert.Equal("<link href='custom.css' rel='stylesheet' media='screen and (max-width: 700px)' type='text/css' />" + Environment.NewLine, options.HeadContent);
+        Assert.Equal("spec.json", options.SpecUrl);
+        Assert.Equal("response", options.ConfigObject.ExpandResponses);
+        Assert.Equal(42, options.ConfigObject.ScrollYOffset);
+        Assert.True(options.ConfigObject.DisableSearch);
+        Assert.True(options.ConfigObject.HideDownloadButton);
+        Assert.True(options.ConfigObject.HideHostname);
+        Assert.True(options.ConfigObject.HideLoading);
+        Assert.True(options.ConfigObject.NativeScrollbars);
+        Assert.True(options.ConfigObject.NoAutoAuth);
+        Assert.True(options.ConfigObject.OnlyRequiredInSamples);
+        Assert.True(options.ConfigObject.PathInMiddlePanel);
+        Assert.True(options.ConfigObject.RequiredPropsFirst);
+        Assert.True(options.ConfigObject.SortPropsAlphabetically);
+        Assert.True(options.ConfigObject.UntrustedSpec);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("gzip;q=0, identity; q=0.5, *;q=0")]
+    [InlineData("deflate, br, zstd")]
+    public async Task ReDocMiddleware_Returns_ExpectedAssetContents_Decompressed(string acceptEncoding)
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var site = new TestSite(typeof(ReDocApp.Startup), outputHelper);
+        using var client = site.BuildClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/Api-Docs/redoc.standalone.js");
+
+        var encodings = acceptEncoding?.Split(',')
+            .Select((p) => p.Trim())
+            .ToList();
+
+        foreach (var encoding in encodings ?? [])
+        {
+            request.Headers.AcceptEncoding.Add(StringWithQualityHeaderValue.Parse(encoding));
+        }
+
+        // Act
+        using var response = await client.SendAsync(request, cancellationToken);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/javascript", response.Content.Headers.ContentType?.MediaType);
+        Assert.Empty(response.Content.Headers.ContentEncoding);
+
+        using var actual = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var expected = typeof(ReDocIntegrationTests).Assembly.GetManifestResourceStream("Swashbuckle.AspNetCore.IntegrationTests.Embedded.ReDoc.redoc.standalone.js");
+
+        Assert.NotNull(actual);
+        Assert.NotNull(expected);
+
+        Assert.NotEqual(0, actual.Length);
+        Assert.NotEqual(0, expected.Length);
+
+        var actualHash = SHA1.HashData(actual);
+        var expectedHash = SHA1.HashData(expected);
+
+        Assert.NotEqual(EmptyStringSha256Hash, Convert.ToBase64String(actualHash));
+        Assert.Equal(expectedHash, actualHash);
+
+        Assert.NotNull(response.Headers.ETag);
+        Assert.False(response.Headers.ETag.IsWeak);
+        Assert.NotEmpty(response.Headers.ETag.Tag);
+        Assert.DoesNotContain(EmptyStringSha256Hash, response.Headers.ETag.Tag);
+
+        Assert.NotNull(response.Headers.CacheControl);
+        Assert.True(response.Headers.CacheControl.Private);
+        Assert.Equal(TimeSpan.Zero, response.Headers.CacheControl.MaxAge);
+
+        Assert.Equal(response.Content.Headers.ContentLength, actual.Length);
+    }
+
+    [Theory]
+    [InlineData("gzip")]
+    [InlineData("gzip;q=1.0, identity; q=0.5, *;q=0")]
+    [InlineData("gzip, deflate, br, zstd")]
+    public async Task ReDocMiddleware_Returns_ExpectedAssetContents_GZip_Compressed(string acceptEncoding)
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var site = new TestSite(typeof(ReDocApp.Startup), outputHelper);
+        using var client = site.BuildClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/Api-Docs/redoc.standalone.js");
+
+        var encodings = acceptEncoding.Split(',')
+            .Select((p) => p.Trim())
+            .ToList();
+
+        foreach (var encoding in encodings)
+        {
+            request.Headers.AcceptEncoding.Add(StringWithQualityHeaderValue.Parse(encoding));
+        }
+
+        // Act
+        using var response = await client.SendAsync(request, cancellationToken);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/javascript", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(["gzip"], [.. response.Content.Headers.ContentEncoding]);
+
+        using var actual = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var expected = typeof(ReDocIntegrationTests).Assembly.GetManifestResourceStream("Swashbuckle.AspNetCore.IntegrationTests.Embedded.ReDoc.redoc.standalone.js");
+
+        Assert.NotNull(actual);
+        Assert.NotNull(expected);
+
+        Assert.NotEqual(0, actual.Length);
+        Assert.NotEqual(0, expected.Length);
+
+        using var decompressed = new GZipStream(actual, CompressionMode.Decompress);
+
+        Assert.True(
+            actual.Length < expected.Length,
+            $"The compressed length ({actual.Length}) was not less than the decompressed length ({expected.Length}).");
+
+        var actualHash = SHA1.HashData(decompressed);
+        var expectedHash = SHA1.HashData(expected);
+
+        Assert.NotEqual(EmptyStringSha256Hash, Convert.ToBase64String(actualHash));
+        Assert.Equal(expectedHash, actualHash);
+
+        Assert.NotNull(response.Headers.ETag);
+        Assert.False(response.Headers.ETag.IsWeak);
+        Assert.NotEmpty(response.Headers.ETag.Tag);
+        Assert.DoesNotContain(EmptyStringSha256Hash, response.Headers.ETag.Tag);
+
+        Assert.NotNull(response.Headers.CacheControl);
+        Assert.True(response.Headers.CacheControl.Private);
+        Assert.Equal(TimeSpan.Zero, response.Headers.CacheControl.MaxAge);
+
+        Assert.Equal(response.Content.Headers.ContentLength, actual.Length);
+    }
+
+    [Fact]
+    public async Task ReDocMiddleware_Encodes_SpecUrl()
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        const string Payload = "x',alert(1),'y";
+
+        using var server = TestSite.CreateServer((app) => app.UseReDoc((options) => options.SpecUrl = Payload));
+        using var client = server.CreateClient();
+
+        // Act
+        using var response = await client.GetAsync("/api-docs/index.js", cancellationToken);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        outputHelper.WriteLine(body);
+
+        Assert.DoesNotContain(Payload, body);
+        Assert.DoesNotContain("Redoc.init('x',alert(1),'y'", body);
+
+        Assert.Contains("Redoc.init(\"x\\u0027,alert(1),\\u0027y\"", body);
+    }
+
+    [Fact]
+    public async Task ReDocMiddleware_SpecUrl_Stays_Encoded_With_The_Relaxed_Json_Encoder()
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var server = TestSite.CreateServer((app) => app.UseReDoc((options) =>
+        {
+            options.SpecUrl = "x\",alert(1),\"y";
+            options.JsonSerializerOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+        }));
+
+        using var client = server.CreateClient();
+
+        // Act
+        using var response = await client.GetAsync("/api-docs/index.js", cancellationToken);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        outputHelper.WriteLine(body);
+
+        Assert.Contains(@"Redoc.init(""x\"",alert(1),\""y""", body);
+    }
+
+    [Fact]
+    public async Task ReDocMiddleware_ConfigObject_Is_Not_Spliced_Into_A_String_Literal()
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var server = TestSite.CreateServer((app) => app.UseReDoc((options) =>
+        {
+            options.ConfigObject.AdditionalItems["theme"] = "x');alert(1);//";
+            options.JsonSerializerOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+        }));
+
+        using var client = server.CreateClient();
+
+        // Act
+        using var response = await client.GetAsync("/api-docs/index.js", cancellationToken);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        outputHelper.WriteLine(body);
+
+        Assert.DoesNotContain("JSON.parse('", body);
+
+        using var config = JsonDocument.Parse(body[body.IndexOf('{')..(body.LastIndexOf('}') + 1)]);
+
+        Assert.Equal("x');alert(1);//", config.RootElement.GetProperty("theme").GetString());
     }
 }

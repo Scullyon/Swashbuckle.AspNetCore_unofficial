@@ -1,50 +1,56 @@
-﻿using System.Linq;
-using System.Reflection;
-using Microsoft.OpenApi.Models;
+﻿using System.Reflection;
+using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
-namespace Swashbuckle.AspNetCore.Annotations
+namespace Swashbuckle.AspNetCore.Annotations;
+
+public class AnnotationsParameterFilter : IParameterFilter
 {
-    public class AnnotationsParameterFilter : IParameterFilter
+    public void Apply(IOpenApiParameter parameter, ParameterFilterContext context)
     {
-        public void Apply(OpenApiParameter parameter, ParameterFilterContext context)
+        if (context.PropertyInfo is { } propertyInfo)
         {
-            if (context.PropertyInfo != null)
-            {
-                ApplyPropertyAnnotations(parameter, context.PropertyInfo);
-            }
-            else if (context.ParameterInfo != null)
-            {
-                ApplyParamAnnotations(parameter, context.ParameterInfo);
-            }
+            ApplyPropertyAnnotations(parameter, propertyInfo);
         }
 
-        private void ApplyPropertyAnnotations(OpenApiParameter parameter, PropertyInfo propertyInfo)
+        if (context.ParameterInfo is { } parameterInfo)
         {
-            var swaggerParameterAttribute = propertyInfo.GetCustomAttributes<SwaggerParameterAttribute>()
-                .FirstOrDefault();
+            ApplyParamAnnotations(parameter, parameterInfo);
+        }
+    }
 
-            if (swaggerParameterAttribute != null)
-                ApplySwaggerParameterAttribute(parameter, swaggerParameterAttribute);
+    private static void ApplyPropertyAnnotations(IOpenApiParameter parameter, PropertyInfo propertyInfo)
+    {
+        var swaggerParameterAttribute = propertyInfo.GetCustomAttributes<SwaggerParameterAttribute>()
+            .FirstOrDefault();
+
+        if (swaggerParameterAttribute != null)
+        {
+            ApplySwaggerParameterAttribute(parameter, swaggerParameterAttribute);
+        }
+    }
+
+    private static void ApplyParamAnnotations(IOpenApiParameter parameter, ParameterInfo parameterInfo)
+    {
+        var swaggerParameterAttribute = parameterInfo.GetCustomAttribute<SwaggerParameterAttribute>();
+
+        if (swaggerParameterAttribute != null)
+        {
+            ApplySwaggerParameterAttribute(parameter, swaggerParameterAttribute);
+        }
+    }
+
+    private static void ApplySwaggerParameterAttribute(IOpenApiParameter parameter, SwaggerParameterAttribute swaggerParameterAttribute)
+    {
+        if (swaggerParameterAttribute.Description is { } description)
+        {
+            parameter.Description = description;
         }
 
-        private void ApplyParamAnnotations(OpenApiParameter parameter, ParameterInfo parameterInfo)
+        if (parameter is OpenApiParameter concrete &&
+            swaggerParameterAttribute.RequiredFlag is { } required)
         {
-
-            var swaggerParameterAttribute = parameterInfo.GetCustomAttributes<SwaggerParameterAttribute>()
-                .FirstOrDefault();
-
-            if (swaggerParameterAttribute != null)
-                ApplySwaggerParameterAttribute(parameter, swaggerParameterAttribute);
-        }
-
-        private void ApplySwaggerParameterAttribute(OpenApiParameter parameter, SwaggerParameterAttribute swaggerParameterAttribute)
-        {
-            if (swaggerParameterAttribute.Description != null)
-                parameter.Description = swaggerParameterAttribute.Description;
-
-            if (swaggerParameterAttribute.RequiredFlag.HasValue)
-                parameter.Required = swaggerParameterAttribute.RequiredFlag.Value;
+            concrete.Required = required;
         }
     }
 }

@@ -1,54 +1,57 @@
-using System.Linq;
-using System.Collections.Generic;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using Newtonsoft.Json.Linq;
 
-namespace Swashbuckle.AspNetCore.ApiTesting
-{
-    public class JsonValidator : IJsonValidator
-    {
-        private readonly IEnumerable<IJsonValidator> _subValidators;
+namespace Swashbuckle.AspNetCore.ApiTesting;
 
-        public JsonValidator()
+public sealed class JsonValidator : IJsonValidator
+{
+    private readonly IEnumerable<IJsonValidator> _subValidators;
+
+    public JsonValidator()
+    {
+        _subValidators =
+        [
+            new JsonNullValidator(),
+            new JsonBooleanValidator(),
+            new JsonObjectValidator(this),
+            new JsonArrayValidator(this),
+            new JsonNumberValidator(),
+            new JsonStringValidator(),
+            new JsonAllOfValidator(this),
+            new JsonAnyOfValidator(this),
+            new JsonOneOfValidator(this),
+        ];
+    }
+
+    public bool CanValidate(IOpenApiSchema schema) => true;
+
+    public bool Validate(
+        IOpenApiSchema schema,
+        OpenApiDocument openApiDocument,
+        JToken instance,
+        out IEnumerable<string> errorMessages)
+    {
+        if (schema is OpenApiSchemaReference reference && !openApiDocument.Components.Schemas.Any((p) => p.Key == reference.Reference.Id))
         {
-            _subValidators = new IJsonValidator[]
-            {
-                new JsonNullValidator(),
-                new JsonBooleanValidator(),
-                new JsonObjectValidator(this),
-                new JsonArrayValidator(this),
-                new JsonNumberValidator(),
-                new JsonStringValidator(),
-                new JsonAllOfValidator(this),
-                new JsonAnyOfValidator(this),
-                new JsonOneOfValidator(this),
-            };
+            throw new InvalidOperationException($"Invalid Reference identifier '{reference.Reference.Id}'.");
         }
 
-        public bool CanValidate(OpenApiSchema schema) => true;
+        var errors = new List<string>();
 
-        public bool Validate(
-            OpenApiSchema schema,
-            OpenApiDocument openApiDocument,
-            JToken instance,
-            out IEnumerable<string> errorMessages)
+        foreach (var subValidator in _subValidators)
         {
-            schema = (schema.Reference != null)
-                ? (OpenApiSchema)openApiDocument.ResolveReference(schema.Reference)
-                : schema;
-
-            var errorMessagesList = new List<string>();
-
-            foreach (var subValidator in _subValidators)
+            if (!subValidator.CanValidate(schema))
             {
-                if (!subValidator.CanValidate(schema)) continue;
-
-                if (!subValidator.Validate(schema, openApiDocument, instance, out IEnumerable<string> subErrorMessages))
-                    errorMessagesList.AddRange(subErrorMessages);
+                continue;
             }
 
-            errorMessages = errorMessagesList;
-            return !errorMessages.Any();
+            if (!subValidator.Validate(schema, openApiDocument, instance, out IEnumerable<string> subErrorMessages))
+            {
+                errors.AddRange(subErrorMessages);
+            }
         }
+
+        errorMessages = errors;
+        return !errorMessages.Any();
     }
 }

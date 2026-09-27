@@ -1,120 +1,236 @@
 ﻿using System.Globalization;
-using System.IO;
 using System.Text;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.AspNetCore.Routing.Template;
-using Microsoft.OpenApi.Models;
-using Microsoft.OpenApi.Writers;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.OpenApi;
 
-namespace Swashbuckle.AspNetCore.Swagger
+namespace Swashbuckle.AspNetCore.Swagger;
+
+internal sealed class SwaggerMiddleware
 {
-    public class SwaggerMiddleware
-    {
-        private readonly RequestDelegate _next;
-        private readonly SwaggerOptions _options;
-        private readonly TemplateMatcher _requestMatcher;
+    private static readonly Encoding UTF8WithoutBom = new UTF8Encoding(false);
+    private static readonly HashSet<string> AllowedHttpMethods = new(StringComparer.OrdinalIgnoreCase) { HttpMethods.Get, HttpMethods.Head };
 
-        public SwaggerMiddleware(
-            RequestDelegate next,
-            SwaggerOptions options)
+    private readonly RequestDelegate _next;
+    private readonly SwaggerOptions _options;
+    private readonly TemplateMatcher _requestMatcher;
+    private readonly TemplateBinder _templateBinder;
+
+    public SwaggerMiddleware(
+        RequestDelegate next,
+        SwaggerOptions options)
+    {
+        _next = next;
+        _options = options ?? new SwaggerOptions();
+        _requestMatcher = new TemplateMatcher(TemplateParser.Parse(_options.RouteTemplate), []);
+    }
+
+    [ActivatorUtilitiesConstructor]
+    public SwaggerMiddleware(
+        RequestDelegate next,
+        SwaggerOptions options,
+        TemplateBinderFactory templateBinderFactory) : this(next, options)
+    {
+        _templateBinder = templateBinderFactory.Create(RoutePatternFactory.Parse(_options.RouteTemplate));
+    }
+
+    public async Task Invoke(HttpContext httpContext, ISwaggerProvider swaggerProvider)
+    {
+        if (!RequestingSwaggerDocument(httpContext.Request, out string documentName, out string extension))
         {
-            _next = next;
-            _options = options ?? new SwaggerOptions();
-            _requestMatcher = new TemplateMatcher(TemplateParser.Parse(_options.RouteTemplate), new RouteValueDictionary());
+            await _next(httpContext);
+            return;
         }
 
-        public async Task Invoke(HttpContext httpContext, ISwaggerProvider swaggerProvider)
+        try
         {
-            if (!RequestingSwaggerDocument(httpContext.Request, out string documentName))
+            var basePath = GetBasePath(httpContext.Request);
+
+            OpenApiDocument swagger;
+            var asyncSwaggerProvider = httpContext.RequestServices.GetService<IAsyncSwaggerProvider>();
+
+            if (asyncSwaggerProvider is not null)
             {
-                await _next(httpContext);
-                return;
+                swagger = await asyncSwaggerProvider.GetSwaggerAsync(
+                    documentName: documentName,
+                    host: null,
+                    basePath: basePath);
+            }
+            else
+            {
+                swagger = swaggerProvider.GetSwagger(
+                    documentName: documentName,
+                    host: null,
+                    basePath: basePath);
             }
 
-            try
+            // One last opportunity to modify the Swagger Document - this time with request context
+            foreach (var filter in _options.PreSerializeFilters)
             {
-                var basePath = httpContext.Request.PathBase.HasValue
-                    ? httpContext.Request.PathBase.Value
-                    : null;
+                filter(swagger, httpContext.Request);
+            }
 
-                var swagger = swaggerProvider switch
-                {
-                    IAsyncSwaggerProvider asyncSwaggerProvider => await asyncSwaggerProvider.GetSwaggerAsync(
-                        documentName: documentName,
-                        host: null,
-                        basePath: basePath),
-                    _ => swaggerProvider.GetSwagger(
-                        documentName: documentName,
-                        host: null,
-                        basePath: basePath)
-                };
+            if (basePath is not null)
+            {
+                // The document embeds the request's path base, which is not necessarily fixed by the
+                // application (see GetBasePath), so the response is not safe for a shared cache to
+                // store and replay to a client whose request had a different path base.
+                httpContext.Response.GetTypedHeaders().CacheControl = new() { Private = true };
+            }
 
-                // One last opportunity to modify the Swagger Document - this time with request context
-                foreach (var filter in _options.PreSerializeFilters)
-                {
-                    filter(swagger, httpContext.Request);
-                }
+            var isHeadRequest = HttpMethods.IsHead(httpContext.Request.Method);
 
-                if (Path.GetExtension(httpContext.Request.Path.Value) == ".yaml")
+            if (extension is ".yaml" or ".yml")
+            {
+                await RespondWithSwaggerYaml(httpContext.Response, swagger, isHeadRequest);
+            }
+            else
+            {
+                await RespondWithSwaggerJson(httpContext.Response, swagger, isHeadRequest);
+            }
+        }
+        catch (UnknownSwaggerDocument)
+        {
+            httpContext.Response.StatusCode = 404;
+        }
+    }
+
+    /// <summary>
+    /// Gets the base path to use for the document's server URL, or <see langword="null"/> if there is none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The value becomes <c>servers[].url</c>, which consumers such as the Swagger UI resolve as a URI
+    /// reference to determine where to send requests. <see cref="HttpRequest.PathBase"/> is only ever a
+    /// path, but a value beginning <c>//</c> or <c>/\</c> is a network-path reference that a browser
+    /// resolves against a different authority, so such a value is discarded rather than emitted.
+    /// </para>
+    /// <para>
+    /// This matters because the path base is not necessarily fixed by the application: it is derived
+    /// from the request when <c>X-Forwarded-Prefix</c> is honoured by the forwarded headers middleware.
+    /// </para>
+    /// </remarks>
+    private static string GetBasePath(HttpRequest request)
+    {
+        if (!request.PathBase.HasValue)
+        {
+            return null;
+        }
+
+        var basePath = request.PathBase.Value;
+
+        if (basePath.Length > 1 && basePath[0] is '/' && basePath[1] is '/' or '\\')
+        {
+            return null;
+        }
+
+        return basePath;
+    }
+
+    private bool RequestingSwaggerDocument(HttpRequest request, out string documentName, out string extension)
+    {
+        documentName = null;
+        extension = null;
+
+        if (!AllowedHttpMethods.Contains(request.Method))
+        {
+            return false;
+        }
+
+        var routeValues = new RouteValueDictionary();
+        if (_requestMatcher.TryMatch(request.Path, routeValues))
+        {
+            if (_templateBinder != null && !_templateBinder.TryProcessConstraints(request.HttpContext, routeValues, out _, out _))
+            {
+                return false;
+            }
+
+            if (routeValues.TryGetValue("documentName", out var documentNameObject) && documentNameObject is string documentNameString)
+            {
+                documentName = documentNameString;
+                if (routeValues.TryGetValue("extension", out var extensionObject))
                 {
-                    await RespondWithSwaggerYaml(httpContext.Response, swagger);
+                    extension = $".{extensionObject}";
                 }
                 else
                 {
-                    await RespondWithSwaggerJson(httpContext.Response, swagger);
+                    extension = Path.GetExtension(request.Path.Value);
                 }
-            }
-            catch (UnknownSwaggerDocument)
-            {
-                RespondWithNotFound(httpContext.Response);
+                return true;
             }
         }
 
-        private bool RequestingSwaggerDocument(HttpRequest request, out string documentName)
+        return false;
+    }
+
+    private async Task RespondWithSwaggerJson(HttpResponse response, OpenApiDocument swagger, bool isHeadRequest)
+    {
+        string json;
+
+        using (var textWriter = new StringWriter(CultureInfo.InvariantCulture))
         {
-            documentName = null;
-            if (request.Method != "GET") return false;
+            var openApiWriter = new OpenApiJsonWriter(textWriter);
 
-            var routeValues = new RouteValueDictionary();
-            if (!_requestMatcher.TryMatch(request.Path, routeValues) || !routeValues.ContainsKey("documentName")) return false;
+            SerializeDocument(swagger, openApiWriter);
 
-            documentName = routeValues["documentName"].ToString();
-            return true;
+            json = textWriter.ToString();
         }
 
-        private void RespondWithNotFound(HttpResponse response)
+        response.StatusCode = 200;
+        response.ContentType = "application/json;charset=utf-8";
+
+        if (isHeadRequest)
         {
-            response.StatusCode = 404;
+            // HEAD response must have an empty body, but have correct Content-Length header
+            response.ContentLength = UTF8WithoutBom.GetByteCount(json);
+        }
+        else
+        {
+            await response.WriteAsync(json, UTF8WithoutBom);
+        }
+    }
+
+    private async Task RespondWithSwaggerYaml(HttpResponse response, OpenApiDocument swagger, bool isHeadRequest)
+    {
+        string yaml;
+
+        using (var textWriter = new StringWriter(CultureInfo.InvariantCulture))
+        {
+            var openApiWriter = new OpenApiYamlWriter(textWriter);
+
+            SerializeDocument(swagger, openApiWriter);
+
+            yaml = textWriter.ToString();
         }
 
-        private async Task RespondWithSwaggerJson(HttpResponse response, OpenApiDocument swagger)
+        response.StatusCode = 200;
+        response.ContentType = "text/yaml;charset=utf-8";
+
+        if (isHeadRequest)
         {
-            response.StatusCode = 200;
-            response.ContentType = "application/json;charset=utf-8";
-
-            using (var textWriter = new StringWriter(CultureInfo.InvariantCulture))
-            {
-                var jsonWriter = new OpenApiJsonWriter(textWriter);
-                if (_options.SerializeAsV2) swagger.SerializeAsV2(jsonWriter); else swagger.SerializeAsV3(jsonWriter);
-
-                await response.WriteAsync(textWriter.ToString(), new UTF8Encoding(false));
-            }
+            // HEAD response must have an empty body, but have correct Content-Length header
+            response.ContentLength = UTF8WithoutBom.GetByteCount(yaml);
         }
-
-        private async Task RespondWithSwaggerYaml(HttpResponse response, OpenApiDocument swagger)
+        else
         {
-            response.StatusCode = 200;
-            response.ContentType = "text/yaml;charset=utf-8";
+            await response.WriteAsync(yaml, UTF8WithoutBom);
+        }
+    }
 
-            using (var textWriter = new StringWriter(CultureInfo.InvariantCulture))
-            {
-                var yamlWriter = new OpenApiYamlWriter(textWriter);
-                if (_options.SerializeAsV2) swagger.SerializeAsV2(yamlWriter); else swagger.SerializeAsV3(yamlWriter);
-
-                await response.WriteAsync(textWriter.ToString(), new UTF8Encoding(false));
-            }
+    private void SerializeDocument(
+        OpenApiDocument document,
+        IOpenApiWriter writer)
+    {
+        if (_options.CustomDocumentSerializer != null)
+        {
+            _options.CustomDocumentSerializer.SerializeDocument(document, writer, _options.OpenApiVersion);
+        }
+        else
+        {
+            document.SerializeAs(_options.OpenApiVersion, writer);
         }
     }
 }

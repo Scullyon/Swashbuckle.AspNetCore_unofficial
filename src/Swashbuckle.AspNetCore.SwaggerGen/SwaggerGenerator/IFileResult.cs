@@ -1,6 +1,3 @@
-﻿namespace Swashbuckle.AspNetCore.SwaggerGen
-{
-    internal interface IFileResult
-    {
-    }
-}
+﻿namespace Swashbuckle.AspNetCore.SwaggerGen;
+
+internal interface IFileResult;

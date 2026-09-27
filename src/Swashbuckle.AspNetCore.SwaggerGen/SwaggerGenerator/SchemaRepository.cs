@@ -1,60 +1,74 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using Microsoft.OpenApi.Models;
+﻿using Microsoft.OpenApi;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen
+namespace Swashbuckle.AspNetCore.SwaggerGen;
+
+public class SchemaRepository(string documentName = null)
 {
-    public class SchemaRepository
+    private readonly Dictionary<Type, string> _reservedIds = [];
+
+    public string DocumentName { get; } = documentName;
+
+    public Dictionary<string, IOpenApiSchema> Schemas { get; } = [];
+
+    public void RegisterType(Type type, string schemaId)
     {
-        private readonly Dictionary<Type, string> _reservedIds = new Dictionary<Type, string>();
-
-        public SchemaRepository(string documentName = null)
+        if (_reservedIds.ContainsValue(schemaId))
         {
-            DocumentName = documentName;
+            var conflictingType = _reservedIds.First(entry => entry.Value == schemaId).Key;
+
+            throw new InvalidOperationException(
+                $"Can't use schemaId \"${schemaId}\" for type \"${type}\". " +
+                $"The same schemaId is already used for type \"${conflictingType}\"");
         }
 
-        public string DocumentName { get; }
+        _reservedIds.Add(type, schemaId);
+    }
 
-        public Dictionary<string, OpenApiSchema> Schemas { get; private set; } = new Dictionary<string, OpenApiSchema>();
+    public bool TryLookupByType(Type type, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out OpenApiSchemaReference referenceSchema)
+    {
+        referenceSchema = null;
+        bool result = _reservedIds.TryGetValue(type, out string schemaId);
 
-        public void RegisterType(Type type, string schemaId)
+        if (result)
         {
-            if (_reservedIds.ContainsValue(schemaId))
-            {
-                var conflictingType = _reservedIds.First(entry => entry.Value == schemaId).Key;
-
-                throw new InvalidOperationException(
-                    $"Can't use schemaId \"${schemaId}\" for type \"${type}\". " +
-                    $"The same schemaId is already used for type \"${conflictingType}\"");
-            }
-
-            _reservedIds.Add(type, schemaId);
+            referenceSchema = new OpenApiSchemaReference(schemaId);
         }
 
-        public bool TryLookupByType(Type type, out OpenApiSchema referenceSchema)
+        return result;
+    }
+
+    public OpenApiSchemaReference AddDefinition(string schemaId, OpenApiSchema schema)
+    {
+        Schemas.Add(schemaId, schema);
+
+        return new(schemaId)
         {
-            if (_reservedIds.TryGetValue(type, out string schemaId))
+            Default = schema.Default,
+            Description = schema.Description,
+            Deprecated = schema.Deprecated,
+            Examples = schema.Examples,
+            ReadOnly = schema.ReadOnly,
+            Title = schema.Title,
+        };
+    }
+
+    public bool ReplaceSchemaId(Type schemaType, string replacementSchemaId)
+    {
+        ArgumentNullException.ThrowIfNull(schemaType);
+        ArgumentException.ThrowIfNullOrEmpty(replacementSchemaId);
+
+        if (_reservedIds.TryGetValue(schemaType, out string oldSchemaId) &&
+            oldSchemaId != replacementSchemaId &&
+            Schemas.TryGetValue(oldSchemaId, out var targetSchema))
+        {
+            if (Schemas.TryAdd(replacementSchemaId, targetSchema))
             {
-                referenceSchema = new OpenApiSchema
-                {
-                    Reference = new OpenApiReference { Type = ReferenceType.Schema, Id = schemaId }
-                };
+                Schemas.Remove(oldSchemaId);
+                _reservedIds.Remove(schemaType);
                 return true;
             }
-
-            referenceSchema = null;
-            return false;
         }
 
-        public OpenApiSchema AddDefinition(string schemaId, OpenApiSchema schema)
-        {
-            Schemas.Add(schemaId, schema);
-
-            return new OpenApiSchema
-            {
-                Reference = new OpenApiReference { Type = ReferenceType.Schema, Id = schemaId }
-            };
-        }
+        return false;
     }
 }

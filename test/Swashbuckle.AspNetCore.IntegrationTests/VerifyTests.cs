@@ -1,0 +1,120 @@
+﻿using System.Text.RegularExpressions;
+using ReDocApp = ReDoc;
+
+namespace Swashbuckle.AspNetCore.IntegrationTests;
+
+[Collection("TestSite")]
+public partial class VerifyTests(ITestOutputHelper outputHelper)
+{
+    private static string SnapshotsDirectory { get; } = SnapshotTestData.SnapshotsDirectory;
+
+    [Theory]
+    [InlineData(typeof(Basic.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(Basic.Startup), "/swagger/v1/swaggerv2.json", "2.0")]
+    [InlineData(typeof(Basic.Startup), "/swagger/v1/swaggerv3_1.json", "3.1")]
+    [InlineData(typeof(NSwagClientExample.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(CliExample.Startup), "/swagger/v1/swagger_net10.0.json")]
+    [InlineData(typeof(ConfigFromFile.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(CustomDocumentSerializer.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(CustomUIConfig.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(CustomUIIndex.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(GenericControllers.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(MultipleVersions.Startup), "/swagger/1.0/swagger.json")]
+    [InlineData(typeof(MultipleVersions.Startup), "/swagger/2.0/swagger.json")]
+    [InlineData(typeof(OAuth2Integration.Startup), "/resource-server/swagger/v1/swagger.json")]
+    [InlineData(typeof(ReDocApp.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(TestFirst.Startup), "/swagger/v1-generated/openapi.json")]
+    public async Task SwaggerEndpoint_ReturnsValidSwaggerJson(
+        Type startupType,
+        string swaggerRequestUri,
+        string openApiVersion = null)
+    {
+        var testSite = new TestSite(startupType, outputHelper);
+        using var client = testSite.BuildClient();
+
+        using var swaggerResponse = await client.GetAsync(swaggerRequestUri, TestContext.Current.CancellationToken);
+        var swagger = await swaggerResponse.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        await Verify(NormalizeLineBreaks(swagger))
+            .UseDirectory(SnapshotsDirectory)
+            .UseParameters(startupType, openApiVersion ?? GetVersion(swaggerRequestUri));
+    }
+
+    [Fact]
+    public async Task SwaggerEndpoint_ReturnsValidSwaggerJson_ForAutofaq()
+    {
+        var startupType = typeof(CliExampleWithFactory.Startup);
+        const string swaggerRequestUri = "/swagger/v1/swagger_net10.0.json";
+
+        var testSite = new TestSiteAutofaq(startupType, outputHelper);
+        using var client = testSite.BuildClient();
+
+        using var swaggerResponse = await client.GetAsync(swaggerRequestUri, TestContext.Current.CancellationToken);
+        var swagger = await swaggerResponse.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        await Verify(swagger)
+            .UseDirectory(SnapshotsDirectory)
+            .UseParameters(startupType, GetVersion(swaggerRequestUri));
+    }
+
+    [Theory]
+    [InlineData(typeof(MinimalApp.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(MinimalAppWithNullableEnums.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(MultipleResponseTypes.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(MvcWithNullable.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(TodoApp.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(TopLevelSwaggerDoc.Program), "/swagger/v1.json")]
+    [InlineData(typeof(WebApi.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(WebApi.Aot.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(WebApi.Map.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(Authorization.Program), "/swagger/v1/swagger.json")]
+    public async Task Swagger_IsValidJson_No_Startup(
+        Type entryPointType,
+        string swaggerRequestUri)
+    {
+        var swaggerResponse = await SwaggerEndpointReturnsValidSwaggerJson(entryPointType, swaggerRequestUri);
+
+        await Verify(swaggerResponse)
+            .UseDirectory(SnapshotsDirectory)
+            .UseParameters(entryPointType, GetVersion(swaggerRequestUri));
+    }
+
+    [Fact]
+    public async Task TypesAreRenderedCorrectly()
+    {
+        using var application = new TestApplication<WebApi.Program>();
+        using var client = application.CreateDefaultClient();
+
+        var swaggerResponse = await SwaggerResponse(client, "/swagger/v1/swagger.json");
+
+        await Verify(swaggerResponse).UseDirectory(SnapshotsDirectory);
+    }
+
+    private static async Task<string> SwaggerEndpointReturnsValidSwaggerJson(Type entryPointType, string swaggerRequestUri)
+    {
+        using var client = SwaggerIntegrationTests.GetHttpClientForTestApplication(entryPointType);
+        return await SwaggerResponse(client, swaggerRequestUri);
+    }
+
+    private static async Task<string> SwaggerResponse(HttpClient client, string swaggerRequestUri)
+    {
+        using var swaggerResponse = await client.GetAsync(swaggerRequestUri);
+        var contentStream = await swaggerResponse.Content.ReadAsStringAsync();
+        return contentStream;
+    }
+
+    /// <summary>
+    /// Normalize "\n" strings into "\r\n" which is expected linebreak in Verify verified.txt files.
+    /// </summary>
+    private static string NormalizeLineBreaks(string swagger)
+        => UnixNewLineRegex().Replace(swagger, "\\r\\n");
+
+    private static string GetVersion(string swaggerUi) =>
+        VersionRegex().Match(swaggerUi).Groups[1].Value;
+
+    [GeneratedRegex("/\\w+/([\\w+\\d+.-]+)/")]
+    private static partial Regex VersionRegex();
+
+    [GeneratedRegex(@"(?<!\\r)\\n")]
+    private static partial Regex UnixNewLineRegex();
+}

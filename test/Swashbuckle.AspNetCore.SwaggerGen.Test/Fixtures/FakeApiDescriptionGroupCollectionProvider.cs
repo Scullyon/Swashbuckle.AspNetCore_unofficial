@@ -1,29 +1,26 @@
-﻿using System.Collections.Generic;
-using System.Linq;
-using Microsoft.AspNetCore.Mvc.ApiExplorer;
+﻿using Microsoft.AspNetCore.Mvc.ApiExplorer;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen.Test
+namespace Swashbuckle.AspNetCore.SwaggerGen.Test;
+
+public class FakeApiDescriptionGroupCollectionProvider : IApiDescriptionGroupCollectionProvider
 {
-    public class FakeApiDescriptionGroupCollectionProvider : IApiDescriptionGroupCollectionProvider
+    private readonly IEnumerable<ApiDescription> _apiDescriptions;
+
+    public FakeApiDescriptionGroupCollectionProvider(IEnumerable<ApiDescription> apiDescriptions)
     {
-        private readonly IEnumerable<ApiDescription> _apiDescriptions;
+        _apiDescriptions = apiDescriptions;
+    }
 
-        public FakeApiDescriptionGroupCollectionProvider(IEnumerable<ApiDescription> apiDescriptions)
+    public ApiDescriptionGroupCollection ApiDescriptionGroups
+    {
+        get
         {
-            _apiDescriptions = apiDescriptions;
-        }
+            var apiDescriptionGroups = _apiDescriptions
+                .GroupBy(item => item.GroupName)
+                .Select(grouping => new ApiDescriptionGroup(grouping.Key, grouping.ToList()))
+                .ToList();
 
-        public ApiDescriptionGroupCollection ApiDescriptionGroups
-        {
-            get
-            {
-                var apiDescriptionGroups = _apiDescriptions
-                    .GroupBy(item => item.GroupName)
-                    .Select(grouping => new ApiDescriptionGroup(grouping.Key, grouping.ToList()))
-                    .ToList();
-
-                return new ApiDescriptionGroupCollection(apiDescriptionGroups, 1);
-            }
+            return new ApiDescriptionGroupCollection(apiDescriptionGroups, 1);
         }
     }
 }

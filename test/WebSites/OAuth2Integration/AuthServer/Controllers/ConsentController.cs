@@ -1,68 +1,62 @@
-﻿using System.Threading.Tasks;
-using System.Collections.Generic;
-using System.Linq;
+﻿using Duende.IdentityServer.Models;
+using Duende.IdentityServer.Services;
 using Microsoft.AspNetCore.Mvc;
-using IdentityServer4.Stores;
-using IdentityServer4.Services;
-using IdentityServer4.Models;
 
-namespace OAuth2Integration.AuthServer.Controllers
+namespace OAuth2Integration.AuthServer.Controllers;
+
+[ApiExplorerSettings(IgnoreApi = true)]
+public class ConsentController(IIdentityServerInteractionService interaction) : Controller
 {
-    [ApiExplorerSettings(IgnoreApi = true)]
-    public class ConsentController : Controller
+    [HttpGet("consent")]
+    public async Task<IActionResult> Consent(string returnUrl)
     {
-        private readonly IIdentityServerInteractionService _interaction;
-        private readonly IClientStore _clientStore;
-        private readonly IResourceStore _resourceStore;
+        var request = await interaction.GetAuthorizationContextAsync(returnUrl);
 
-        public ConsentController(
-            IIdentityServerInteractionService interaction,
-            IClientStore clientStore,
-            IResourceStore resourceStore)
+        var viewModel = new ConsentViewModel
         {
-            _interaction = interaction;
-            _clientStore = clientStore;
-            _resourceStore = resourceStore;
-        }
+            ReturnUrl = returnUrl,
+            ClientName = request.Client.ClientName,
+            ScopesRequested = request.ValidatedResources?.Resources?.ApiScopes ?? []
+        };
 
-        [HttpGet("consent")]
-        public async Task<IActionResult> Consent(string returnUrl)
-        {
-            var request = await _interaction.GetAuthorizationContextAsync(returnUrl);
-            var client = await _clientStore.FindEnabledClientByIdAsync(request.ClientId);
-            var resource = await _resourceStore.FindApiResourceAsync("api");
-
-            var viewModel = new ConsentViewModel
-            {
-                ReturnUrl = returnUrl,
-                ClientName = client.ClientName,
-                ScopesRequested = resource.Scopes.Where(s => request.ScopesRequested.Contains(s.Name))
-            };
-
-            return View("/AuthServer/Views/Consent.cshtml", viewModel);
-        }
-
-        [HttpPost("consent")]
-        public async Task<IActionResult> Consent([FromForm]ConsentViewModel viewModel)
-        {
-            var request = await _interaction.GetAuthorizationContextAsync(viewModel.ReturnUrl);
-
-            // Communicate outcome of consent back to identityserver
-            var consentResponse = new ConsentResponse
-            {
-                ScopesConsented = viewModel.ScopesConsented
-            };
-            await _interaction.GrantConsentAsync(request, consentResponse);
-
-            return Redirect(viewModel.ReturnUrl);
-        }
+        return View("/AuthServer/Views/Consent.cshtml", viewModel);
     }
 
-    public class ConsentViewModel
+    [HttpPost("consent")]
+    public async Task<IActionResult> Consent([FromForm] ConsentViewModel viewModel)
     {
-        public string ReturnUrl { get; set; }
-        public string ClientName { get; set; }
-        public IEnumerable<Scope> ScopesRequested { get; set; }
-        public string[] ScopesConsented { get; set; }
+        var request = await interaction.GetAuthorizationContextAsync(viewModel.ReturnUrl);
+
+        ConsentResponse consentResponse;
+        if (viewModel.ScopesConsented != null && viewModel.ScopesConsented.Length != 0)
+        {
+            consentResponse = new ConsentResponse
+            {
+                RememberConsent = true,
+                ScopesValuesConsented = [.. viewModel.ScopesConsented],
+            };
+        }
+        else
+        {
+            consentResponse = new ConsentResponse
+            {
+                Error = AuthorizationError.AccessDenied
+            };
+        }
+
+        await interaction.GrantConsentAsync(request, consentResponse);
+
+        return Redirect(viewModel.ReturnUrl);
     }
+}
+
+public class ConsentViewModel
+{
+    public string ReturnUrl { get; set; }
+
+    public string ClientName { get; set; }
+
+    public IEnumerable<ApiScope> ScopesRequested { get; set; }
+
+    public string[] ScopesConsented { get; set; }
 }

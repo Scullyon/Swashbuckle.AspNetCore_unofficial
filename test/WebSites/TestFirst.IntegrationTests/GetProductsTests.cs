@@ -1,50 +1,37 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Net.Http;
-using System.Text;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.OpenApi.Models;
-using Newtonsoft.Json;
+﻿using Microsoft.AspNetCore.Mvc.Testing;
 using Swashbuckle.AspNetCore.ApiTesting.Xunit;
 using Xunit;
 
-namespace TestFirst.IntegrationTests
+namespace TestFirst.IntegrationTests;
+
+public class GetProductsTests(ApiTestRunner apiTestRunner, WebApplicationFactory<Startup> webApplicationFactory)
+    : ApiTestFixture<Startup>(apiTestRunner, webApplicationFactory, "v1-imported")
 {
-    public class GetProductsTests : ApiTestFixture<TestFirst.Startup>
+    [Fact]
+    public async Task GetProducts_Returns200_IfRequiredParametersProvided()
     {
-        public GetProductsTests(
-            ApiTestRunner apiTestRunner,
-            WebApplicationFactory<TestFirst.Startup> webApplicationFactory)
-            : base(apiTestRunner, webApplicationFactory, "v1-imported")
-        { }
+        await TestAsync(
+            "GetProducts",
+            "200",
+            new HttpRequestMessage
+            {
+                RequestUri = new Uri("/api/products?pageNo=1", UriKind.Relative),
+                Method = HttpMethod.Get
+            }
+        );
+    }
 
-        [Fact]
-        public async Task GetProducsts_Returns200_IfRequiredParametersProvided()
-        {
-            await TestAsync(
-                "GetProducts",
-                "200",
-                new HttpRequestMessage
-                {
-                    RequestUri = new Uri("/api/products?pageNo=1", UriKind.Relative),
-                    Method = HttpMethod.Get
-                }
-            );
-        }
-
-        [Fact]
-        public async Task GetProducts_Returns400_IfRequiredParametersMissing()
-        {
-            await TestAsync(
-                "GetProducts",
-                "400",
-                new HttpRequestMessage
-                {
-                    RequestUri = new Uri("/api/products", UriKind.Relative),
-                    Method = HttpMethod.Get
-                }
-            );
-        }
+    [Fact]
+    public async Task GetProducts_Returns400_IfRequiredParametersMissing()
+    {
+        await TestAsync(
+            "GetProducts",
+            "400",
+            new HttpRequestMessage
+            {
+                RequestUri = new Uri("/api/products", UriKind.Relative),
+                Method = HttpMethod.Get
+            }
+        );
     }
 }

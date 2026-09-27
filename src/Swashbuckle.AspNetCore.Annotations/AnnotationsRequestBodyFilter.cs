@@ -1,58 +1,65 @@
-﻿using System.Linq;
-using System.Reflection;
-using Microsoft.OpenApi.Models;
+﻿using System.Reflection;
+using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
-namespace Swashbuckle.AspNetCore.Annotations
+namespace Swashbuckle.AspNetCore.Annotations;
+
+public class AnnotationsRequestBodyFilter : IRequestBodyFilter
 {
-    public class AnnotationsRequestBodyFilter : IRequestBodyFilter
+    public void Apply(IOpenApiRequestBody requestBody, RequestBodyFilterContext context)
     {
-        public void Apply(OpenApiRequestBody requestBody, RequestBodyFilterContext context)
+        var bodyParameterDescription = context.BodyParameterDescription;
+
+        if (bodyParameterDescription == null)
         {
-            var bodyParameterDescription = context.BodyParameterDescription;
-
-            if (bodyParameterDescription == null) return;
-
-            var propertyInfo = bodyParameterDescription.PropertyInfo();
-            if (propertyInfo != null)
-            {
-                ApplyPropertyAnnotations(requestBody, propertyInfo);
-                return;
-            }
-
-            var parameterInfo = bodyParameterDescription.ParameterInfo();
-            if (parameterInfo != null)
-            {
-                ApplyParamAnnotations(requestBody, parameterInfo);
-                return;
-            }
+            return;
         }
 
-        private void ApplyPropertyAnnotations(OpenApiRequestBody parameter, PropertyInfo propertyInfo)
+        var propertyInfo = bodyParameterDescription.PropertyInfo();
+        if (propertyInfo != null)
         {
-            var swaggerRequestBodyAttribute = propertyInfo.GetCustomAttributes<SwaggerRequestBodyAttribute>()
-                .FirstOrDefault();
-
-            if (swaggerRequestBodyAttribute != null)
-                ApplySwaggerRequestBodyAttribute(parameter, swaggerRequestBodyAttribute);
+            ApplyPropertyAnnotations(requestBody, propertyInfo);
         }
 
-        private void ApplyParamAnnotations(OpenApiRequestBody requestBody, ParameterInfo parameterInfo)
+        var parameterInfo = bodyParameterDescription.ParameterInfo();
+        if (parameterInfo != null)
         {
-            var swaggerRequestBodyAttribute = parameterInfo.GetCustomAttributes<SwaggerRequestBodyAttribute>()
-                .FirstOrDefault();
+            ApplyParamAnnotations(requestBody, parameterInfo);
+        }
+    }
 
-            if (swaggerRequestBodyAttribute != null)
-                ApplySwaggerRequestBodyAttribute(requestBody, swaggerRequestBodyAttribute);
+    private static void ApplyPropertyAnnotations(IOpenApiRequestBody parameter, PropertyInfo propertyInfo)
+    {
+        var swaggerRequestBodyAttribute = propertyInfo.GetCustomAttributes<SwaggerRequestBodyAttribute>()
+            .FirstOrDefault();
+
+        if (swaggerRequestBodyAttribute != null)
+        {
+            ApplySwaggerRequestBodyAttribute(parameter, swaggerRequestBodyAttribute);
+        }
+    }
+
+    private static void ApplyParamAnnotations(IOpenApiRequestBody requestBody, ParameterInfo parameterInfo)
+    {
+        var swaggerRequestBodyAttribute = parameterInfo.GetCustomAttribute<SwaggerRequestBodyAttribute>();
+
+        if (swaggerRequestBodyAttribute != null)
+        {
+            ApplySwaggerRequestBodyAttribute(requestBody, swaggerRequestBodyAttribute);
+        }
+    }
+
+    private static void ApplySwaggerRequestBodyAttribute(IOpenApiRequestBody parameter, SwaggerRequestBodyAttribute swaggerRequestBodyAttribute)
+    {
+        if (swaggerRequestBodyAttribute.Description is { } description)
+        {
+            parameter.Description = description;
         }
 
-        private void ApplySwaggerRequestBodyAttribute(OpenApiRequestBody parameter, SwaggerRequestBodyAttribute swaggerRequestBodyAttribute)
+        if (parameter is OpenApiRequestBody concrete &&
+            swaggerRequestBodyAttribute.RequiredFlag is { } required)
         {
-            if (swaggerRequestBodyAttribute.Description != null)
-                parameter.Description = swaggerRequestBodyAttribute.Description;
-
-            if (swaggerRequestBodyAttribute.RequiredFlag.HasValue)
-                parameter.Required = swaggerRequestBodyAttribute.RequiredFlag.Value;
+            concrete.Required = required;
         }
     }
 }

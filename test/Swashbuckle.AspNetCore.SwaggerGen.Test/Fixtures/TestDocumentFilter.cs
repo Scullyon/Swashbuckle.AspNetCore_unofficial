@@ -1,16 +1,21 @@
-﻿using Microsoft.OpenApi.Any;
-using Microsoft.OpenApi.Models;
+﻿using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.TestSupport;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen.Test
+namespace Swashbuckle.AspNetCore.SwaggerGen.Test;
+
+public class TestDocumentFilter : IDocumentFilter, IDocumentAsyncFilter
 {
-    public class TestDocumentFilter : IDocumentFilter
+    public void Apply(OpenApiDocument swaggerDoc, DocumentFilterContext context)
     {
-        public void Apply(OpenApiDocument swaggerDoc, DocumentFilterContext context)
-        {
-            swaggerDoc.Extensions.Add("X-foo", new OpenApiString("bar"));
-            swaggerDoc.Extensions.Add("X-docName", new OpenApiString(context.DocumentName));
-            context.SchemaGenerator.GenerateSchema(typeof(ComplexType), context.SchemaRepository);
-        }
+        swaggerDoc.Extensions ??= new Dictionary<string, IOpenApiExtension>();
+        swaggerDoc.Extensions.Add("X-foo", new JsonNodeExtension("bar"));
+        swaggerDoc.Extensions.Add("X-docName", new JsonNodeExtension(context.DocumentName));
+        context.SchemaGenerator.GenerateSchema(typeof(ComplexType), context.SchemaRepository);
+    }
+
+    public Task ApplyAsync(OpenApiDocument swaggerDoc, DocumentFilterContext context, CancellationToken cancellationToken)
+    {
+        Apply(swaggerDoc, context);
+        return Task.CompletedTask;
     }
 }

@@ -1,14 +1,13 @@
-﻿using Microsoft.OpenApi.Any;
-using Microsoft.OpenApi.Models;
+﻿using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
-namespace Swashbuckle.AspNetCore.Annotations.Test
+namespace Swashbuckle.AspNetCore.Annotations.Test;
+
+public class VendorExtensionsOperationFilter : IOperationFilter
 {
-    public class VendorExtensionsOperationFilter : IOperationFilter
+    public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
-        public void Apply(OpenApiOperation operation, OperationFilterContext contex)
-        {
-            operation.Extensions.Add("X-property1", new OpenApiString("value"));
-        }
+        operation.Extensions ??= new Dictionary<string, IOpenApiExtension>();
+        operation.Extensions.Add("X-property1", new JsonNodeExtension("value"));
     }
 }

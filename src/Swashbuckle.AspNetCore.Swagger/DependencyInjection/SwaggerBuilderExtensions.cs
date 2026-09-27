@@ -1,72 +1,76 @@
-﻿using System;
-using System.Linq;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-
-#if (!NETSTANDARD2_0)
 using Microsoft.AspNetCore.Routing.Patterns;
-#endif
-
+using Microsoft.AspNetCore.Routing.Template;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Swashbuckle.AspNetCore.Swagger;
 
-namespace Microsoft.AspNetCore.Builder
+namespace Microsoft.AspNetCore.Builder;
+
+public static class SwaggerBuilderExtensions
 {
-    public static class SwaggerBuilderExtensions
+    /// <summary>
+    /// Register the Swagger middleware with provided options
+    /// </summary>
+    public static IApplicationBuilder UseSwagger(this IApplicationBuilder app, SwaggerOptions options)
+        => app.UseMiddleware<SwaggerMiddleware>(options, app.ApplicationServices.GetRequiredService<TemplateBinderFactory>());
+
+    /// <summary>
+    /// Register the Swagger middleware with optional setup action for DI-injected options
+    /// </summary>
+    public static IApplicationBuilder UseSwagger(
+        this IApplicationBuilder app,
+        Action<SwaggerOptions> setupAction = null)
     {
-        /// <summary>
-        /// Register the Swagger middleware with provided options
-        /// </summary>
-        public static IApplicationBuilder UseSwagger(this IApplicationBuilder app, SwaggerOptions options)
+        SwaggerOptions options;
+        using (var scope = app.ApplicationServices.CreateScope())
         {
-            return app.UseMiddleware<SwaggerMiddleware>(options);
+            options = scope.ServiceProvider.GetRequiredService<IOptionsSnapshot<SwaggerOptions>>().Value;
+            setupAction?.Invoke(options);
         }
 
-        /// <summary>
-        /// Register the Swagger middleware with optional setup action for DI-injected options
-        /// </summary>
-        public static IApplicationBuilder UseSwagger(
-            this IApplicationBuilder app,
-            Action<SwaggerOptions> setupAction = null)
+        return app.UseSwagger(options);
+    }
+
+    public static IEndpointConventionBuilder MapSwagger(
+        this IEndpointRouteBuilder endpoints,
+        string pattern = SwaggerOptions.DefaultRouteTemplate,
+        Action<SwaggerEndpointOptions> setupAction = null)
+    {
+        if (!RoutePatternFactory.Parse(pattern).Parameters.Any(x => x.Name == "documentName"))
         {
-            SwaggerOptions options;
-            using (var scope = app.ApplicationServices.CreateScope())
+            throw new ArgumentException("Pattern must contain '{documentName}' parameter", nameof(pattern));
+        }
+
+        var pipeline = endpoints.CreateApplicationBuilder()
+            .UseSwagger(Configure)
+            .Build();
+
+        return endpoints.MapMethods(pattern, [HttpMethods.Get, HttpMethods.Head], async (context) =>
+        {
+            var endpoint = context.GetEndpoint();
+            context.SetEndpoint(null);
+
+            try
             {
-                options = scope.ServiceProvider.GetRequiredService<IOptionsSnapshot<SwaggerOptions>>().Value;
-                setupAction?.Invoke(options);
+                await pipeline(context);
             }
-
-            return app.UseSwagger(options);
-        }
-
-#if (!NETSTANDARD2_0)
-        public static IEndpointConventionBuilder MapSwagger(
-            this IEndpointRouteBuilder endpoints,
-            string pattern = "/swagger/{documentName}/swagger.{json|yaml}",
-            Action<SwaggerEndpointOptions> setupAction = null)
-        {
-            if (!RoutePatternFactory.Parse(pattern).Parameters.Any(x => x.Name == "documentName"))
+            finally
             {
-                throw new ArgumentException("Pattern must contain '{documentName}' parameter", nameof(pattern));
+                context.SetEndpoint(endpoint);
             }
+        });
 
-            Action<SwaggerOptions> endpointSetupAction = options =>
-            {
-                var endpointOptions = new SwaggerEndpointOptions();
+        void Configure(SwaggerOptions options)
+        {
+            var endpointOptions = new SwaggerEndpointOptions();
 
-                setupAction?.Invoke(endpointOptions);
+            setupAction?.Invoke(endpointOptions);
 
-                options.RouteTemplate = pattern;
-                options.SerializeAsV2 = endpointOptions.SerializeAsV2;
-                options.PreSerializeFilters.AddRange(endpointOptions.PreSerializeFilters);
-            };
-
-            var pipeline = endpoints.CreateApplicationBuilder()
-                .UseSwagger(endpointSetupAction)
-                .Build();
-
-            return endpoints.MapGet(pattern, pipeline);
+            options.RouteTemplate = pattern;
+            options.OpenApiVersion = endpointOptions.OpenApiVersion;
+            options.PreSerializeFilters.AddRange(endpointOptions.PreSerializeFilters);
         }
-#endif
     }
 }

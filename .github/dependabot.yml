@@ -1,0 +1,52 @@
+version: 2
+updates:
+- package-ecosystem: "github-actions"
+  directory: "/"
+  groups:
+    github/codeql-action:
+      patterns:
+        - github/codeql-action/analyze
+        - github/codeql-action/init
+  schedule:
+    interval: weekly
+    day: wednesday
+    time: "10:00"
+    timezone: Europe/London
+- package-ecosystem: npm
+  directory: "/src/Swashbuckle.AspNetCore.ReDoc"
+  schedule:
+    interval: weekly
+    day: wednesday
+    time: "10:00"
+    timezone: Europe/London
+- package-ecosystem: npm
+  directory: "/src/Swashbuckle.AspNetCore.SwaggerUI"
+  schedule:
+    interval: weekly
+    day: wednesday
+    time: "10:00"
+    timezone: Europe/London
+- package-ecosystem: nuget
+  directory: "/"
+  groups:
+    Microsoft.OpenApi:
+      patterns:
+        - Microsoft.OpenApi*
+    xunit:
+      patterns:
+        - xunit.*
+        - Verify.XunitV3
+  schedule:
+    interval: weekly
+    day: wednesday
+    time: "10:00"
+    timezone: Europe/London
+  ignore:
+    # Ignore the libraries which are "pinned"
+    - dependency-name: "IdentityServer4"
+    - dependency-name: "IdentityServer4.AccessTokenValidation"
+    - dependency-name: "Microsoft.AspNetCore.Mvc.NewtonsoftJson"
+    - dependency-name: "Microsoft.AspNetCore.Mvc.Testing"
+    - dependency-name: "Microsoft.OpenApi"
+    - dependency-name: "Microsoft.OpenApi.YamlReader"
+    - dependency-name: "xunit"

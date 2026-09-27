@@ -1,0 +1,324 @@
+name: build
+
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master, dotnet-vnext ]
+  workflow_dispatch:
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_GENERATE_ASPNET_CERTIFICATE: false
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION: 1
+  NUGET_XMLDOC_MODE: skip
+  TERM: xterm
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os-name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+
+    outputs:
+      dotnet-sdk-version: ${{ steps.setup-dotnet.outputs.dotnet-version }}
+      dotnet-validate-version: ${{ steps.get-dotnet-tools-versions.outputs.dotnet-validate-version }}
+      nuget-package-validation-version: ${{ steps.get-dotnet-tools-versions.outputs.nuget-package-validation-version }}
+      package-version: ${{ steps.build.outputs.package-version }}
+
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os-name: macos-latest
+            runner: macos-26
+          - os-name: ubuntu-latest
+            runner: ubuntu-24.04
+          - os-name: windows-latest
+            runner: windows-2025
+
+    steps:
+
+    - name: Update agent configuration
+      shell: pwsh
+      run: |
+        if ($IsWindows) {
+          "DOTNET_INSTALL_DIR=D:\tools\dotnet" >> ${env:GITHUB_ENV}
+          "DOTNET_ROOT=D:\tools\dotnet" >> ${env:GITHUB_ENV}
+          "NUGET_PACKAGES=D:\.nuget\packages" >> ${env:GITHUB_ENV}
+        } else {
+          $nugetHome = "~/.nuget/packages"
+          if (-Not (Test-Path $nugetHome)) {
+            New-Item -Path $nugetHome -Type Directory -Force | Out-Null
+          }
+          $nugetHome = Resolve-Path $nugetHome
+          "NUGET_PACKAGES=$nugetHome" >> ${env:GITHUB_ENV}
+        }
+
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        filter: 'tree:0'
+        persist-credentials: false
+        show-progress: false
+
+    - name: Get Git commit timestamp
+      id: get-commit-timestamp
+      shell: pwsh
+      run: |
+        "epoch=$(git log -1 --pretty=%ct)" >> ${env:GITHUB_OUTPUT}
+
+    - name: Setup .NET SDKs
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      with:
+        dotnet-version: |
+          8.0.x
+          9.0.x
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      id: setup-dotnet
+
+    - name: Install .NET tools
+      shell: pwsh
+      run: |
+        dotnet tool restore
+
+    - name: Setup Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: '24'
+        package-manager-cache: false
+
+    - name: Install npm packages for ReDoc
+      run:  npm ci
+      working-directory: src/Swashbuckle.AspNetCore.ReDoc
+
+    - name: Install npm packages for SwaggerUI
+      run:  npm ci
+      working-directory: src/Swashbuckle.AspNetCore.SwaggerUI
+
+    - name: Build, Package and Test
+      id: build
+      shell: pwsh
+      run: |
+        ./build.ps1
+      env:
+        SOURCE_DATE_EPOCH: ${{ steps.get-commit-timestamp.outputs.epoch }}
+
+    - name: Upload Coverage Reports
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: coverage-${{ runner.os }}
+        path: ./artifacts/coverage
+        if-no-files-found: ignore
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+      with:
+        flags: ${{ runner.os }}
+        token: ${{ secrets.CODECOV_TOKEN }}
+
+    - name: Upload test results to Codecov
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+      if: ${{ !cancelled() }}
+      with:
+        flags: ${{ runner.os }}
+        report_type: test_results
+        token: ${{ secrets.CODECOV_TOKEN }}
+
+    - name: Generate SBOM
+      uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      if: runner.os == 'Windows'
+      with:
+        artifact-name: Swashbuckle.AspNetCore.spdx.json
+        output-file: ./artifacts/Swashbuckle.AspNetCore.spdx.json
+        path: ./artifacts/bin
+        upload-release-assets: true
+
+    - name: Attest artifacts
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      if: |
+        runner.os == 'Windows' &&
+        github.event.repository.fork == false &&
+        (github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/v'))
+      with:
+        subject-path: |
+          ./artifacts/Swashbuckle.AspNetCore.spdx.json
+          ./artifacts/bin/Swashbuckle.AspNetCore*/release_*/**/Swashbuckle.AspNetCore*.dll
+          ./artifacts/package/release/*
+
+    - name: Publish NuGet packages
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      id: upload-artifacts
+      if: ${{ !cancelled() }}
+      with:
+        name: packages-${{ runner.os }}
+        path: ./artifacts/package/release
+        if-no-files-found: error
+
+    - name: Get .NET tools versions
+      id: get-dotnet-tools-versions
+      shell: pwsh
+      run: |
+        $manifest = (Get-Content "./.config/dotnet-tools.json" | Out-String | ConvertFrom-Json)
+        $dotnetValidateVersion = $manifest.tools.'dotnet-validate'.version
+        $nugetPackageValidationVersion = $manifest.tools.'meziantou.framework.nugetpackagevalidation.tool'.version
+        "dotnet-validate-version=${dotnetValidateVersion}" >> ${env:GITHUB_OUTPUT}
+        "nuget-package-validation-version=${nugetPackageValidationVersion}" >> ${env:GITHUB_OUTPUT}
+
+  validate-packages:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+
+    - name: Download packages
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: packages-Windows
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      with:
+        dotnet-version: ${{ needs.build.outputs.dotnet-sdk-version }}
+
+    - name: Install NuGet package validation tools
+      shell: pwsh
+      env:
+        DOTNET_VALIDATE_VERSION: ${{ needs.build.outputs.dotnet-validate-version }}
+        NUGET_PACKAGE_VALIDATION_VERSION: ${{ needs.build.outputs.nuget-package-validation-version }}
+      run: |
+        dotnet tool install --global dotnet-validate --version ${env:DOTNET_VALIDATE_VERSION} --allow-roll-forward
+        dotnet tool install --global Meziantou.Framework.NuGetPackageValidation.Tool --version ${env:NUGET_PACKAGE_VALIDATION_VERSION} --allow-roll-forward
+
+    - name: Validate NuGet packages
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $packages = Get-ChildItem -Filter "*.nupkg" | ForEach-Object { $_.FullName }
+        $invalidPackages = 0
+        foreach ($package in $packages) {
+          $isValid = $true
+          dotnet validate package local $package
+          if ($LASTEXITCODE -ne 0) {
+            $isValid = $false
+          }
+          meziantou.validate-nuget-package $package --github-token ${env:GH_TOKEN} --excluded-rules IconMustBeSet
+          if ($LASTEXITCODE -ne 0) {
+            $isValid = $false
+          }
+          if (-Not $isValid) {
+            $invalidPackages++
+          }
+        }
+        if ($invalidPackages -gt 0) {
+          Write-Output "::error::$invalidPackages NuGet package(s) failed validation."
+          exit 1
+        }
+
+  publish-myget:
+    needs: [ build, validate-packages ]
+    runs-on: ubuntu-24.04
+    if: |
+      github.event.repository.fork == false &&
+      (github.ref_name == github.event.repository.default_branch ||
+       github.head_ref == 'dotnet-vnext' ||
+       startsWith(github.ref, 'refs/tags/v'))
+
+    environment:
+      name: MyGet.org
+      url: https://www.myget.org/gallery/domaindrivendev
+
+    steps:
+
+    - name: Download packages
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: packages-Windows
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      with:
+        dotnet-version: ${{ needs.build.outputs.dotnet-sdk-version }}
+
+    - name: Push NuGet packages to MyGet.org
+      env:
+        NUGET_API_KEY: ${{ secrets.MYGET_TOKEN }}
+        PACKAGE_VERSION: ${{ needs.build.outputs.package-version }}
+        SOURCE: "https://www.myget.org/F/domaindrivendev/api/v3/index.json"
+      run: | # zizmor: ignore[use-trusted-publishing] MyGet does not support trusted publishing
+        dotnet nuget push "*.nupkg" --skip-duplicate --source "${SOURCE}" && echo "::notice title=myget.org::Published version ${PACKAGE_VERSION} to MyGet."
+
+  publish-nuget:
+    needs: [ build, validate-packages ]
+    runs-on: ubuntu-24.04
+    if: |
+      github.event.repository.fork == false &&
+      startsWith(github.ref, 'refs/tags/v')
+
+    environment:
+      name: NuGet.org
+      url: https://www.nuget.org/profiles/domaindrivendev
+
+    permissions:
+      id-token: write
+
+    steps:
+
+    - name: Download packages
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: packages-Windows
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      with:
+        dotnet-version: ${{ needs.build.outputs.dotnet-sdk-version }}
+
+    - name: NuGet log in
+      uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+      id: nuget-login
+      with:
+        user: ${{ secrets.NUGET_USER }}
+
+    - name: Push NuGet packages to NuGet.org
+      env:
+        NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        PACKAGE_VERSION: ${{ needs.build.outputs.package-version }}
+        SOURCE: https://api.nuget.org/v3/index.json
+      run: |
+        dotnet nuget push "*.nupkg" --skip-duplicate --source "${SOURCE}" && echo "::notice title=nuget.org::Published version ${PACKAGE_VERSION} to NuGet.org."
+
+  notify-nuget:
+    needs: [ build, publish-nuget ]
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write
+
+    steps:
+
+    - name: Publish nuget_packages_published
+      uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+      with:
+        event-type: nuget_packages_published
+        token: ${{ secrets.GITHUB_TOKEN }}
+        client-payload: |-
+          {
+            "artifact_name": "packages-Windows",
+            "run_id": "${{ github.run_id }}",
+            "version": "${{ needs.build.outputs.package-version }}"
+          }

@@ -1,55 +1,78 @@
-﻿using System;
+﻿using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
+using Swashbuckle.AspNetCore.Annotations;
 
-namespace Basic.Controllers
+namespace Basic.Controllers;
+
+[Produces("application/json")]
+public class DataAnnotationsController : Controller
 {
-    [Produces("application/json")]
-    public class DataAnnotationsController : Controller
+    [HttpPost("payments/authorize")]
+    [ProducesResponseType(200, Type = typeof(string))]
+    public IActionResult AuthorizePayment([FromBody, Required] PaymentRequest request)
     {
-        [HttpPost("payments/authorize")]
-        [ProducesResponseType(200, Type = typeof(string))]
-        public IActionResult AuthorizePayment([FromBody, Required]PaymentRequest request)
-        {
-            if (!ModelState.IsValid)
-                return new BadRequestObjectResult(ModelState);
+        Debug.Assert(request is not null);
 
-            return new ObjectResult("123456");
+        if (!ModelState.IsValid)
+        {
+            return new BadRequestObjectResult(ModelState);
         }
 
-        [HttpPut("payments/{paymentId}/cancel")]
-        public IActionResult CancelPayment([MinLength(6)]string paymentId)
-        {
-            return Ok();
-        }
+        return new ObjectResult("123456");
     }
 
-    public class PaymentRequest
+    [HttpPut("payments/{paymentId}/cancel")]
+    public IActionResult CancelPayment([MinLength(6)] string paymentId)
     {
-        [Required]
-        public Transaction Transaction { get; set; }
-
-        [Required]
-        public CreditCard CreditCard { get; set; }
+        Debug.Assert(paymentId is not null);
+        return Ok();
     }
 
-    public class Transaction
+    /// <summary>
+    /// Retrieves the list of appointments this week for the specified day.
+    /// </summary>
+    /// <param name="dayOfWeek">The day of week for which to get appointments.</param>
+    /// <returns>
+    /// The list of appointments for the specified day.
+    /// </returns>
+    [HttpPut("get-weekly-apppointments")]
+    public IActionResult GetWeeklyAppointments(
+        [DefaultValue(DayOfWeek.Thursday)]
+        [SwaggerSchema("The day of the week.")]
+        DayOfWeek? dayOfWeek)
     {
-        [Required]
-        public decimal Amount { get; set; }
-
-        public string Note { get; set; }
+        Debug.Assert(dayOfWeek is null || Enum.IsDefined(dayOfWeek.Value));
+        return Ok();
     }
+}
 
-    public class CreditCard
-    {
-        [Required, RegularExpression("^[3-6]?\\d{12,15}$")]
-        public string CardNumber { get; set; }
+public class PaymentRequest
+{
+    [Required]
+    public Transaction Transaction { get; set; }
 
-        [Required, Range(1, 12)]
-        public int ExpMonth { get; set; }
+    [Required]
+    public CreditCard CreditCard { get; set; }
+}
 
-        [Required, Range(14, 99)]
-        public int ExpYear { get; set; }
-    }
+public class Transaction
+{
+    [Required]
+    public decimal Amount { get; set; }
+
+    public string Note { get; set; }
+}
+
+public class CreditCard
+{
+    [Required, RegularExpression("^[3-6]?\\d{12,15}$")]
+    public string CardNumber { get; set; }
+
+    [Required, Range(1, 12)]
+    public int ExpMonth { get; set; }
+
+    [Required, Range(14, 99)]
+    public int ExpYear { get; set; }
 }

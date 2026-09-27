@@ -2,47 +2,51 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 
-namespace TestFirst.Controllers
+namespace TestFirst.Controllers;
+
+[Route("api/[controller]")]
+public class ProductsController : Controller
 {
-    [Route("api/[controller]")]
-    public class ProductsController : Controller
+    [HttpPost]
+    public IActionResult CreateProduct([FromBody] Product product)
     {
-        [HttpPost]
-        public IActionResult CreateProduct([FromBody]Product product)
+        if (!ModelState.IsValid)
         {
-            if (!ModelState.IsValid)
-                return new BadRequestObjectResult(ModelState);
-
-            return Created("api/products/1", null);
+            return new BadRequestObjectResult(ModelState);
         }
 
-        [HttpGet]
-        public IActionResult GetProducts([FromQuery]PagingParameters parameters)
+        return Created("api/products/1", product);
+    }
+
+    [HttpGet]
+    public IActionResult GetProducts([FromQuery] PagingParameters parameters)
+    {
+        if (!ModelState.IsValid)
         {
-            if (!ModelState.IsValid)
-                return new BadRequestObjectResult(ModelState);
-
-            return new ObjectResult(new[]
-            {
-                new Product { Id = 1, Name = "foo" },
-                new Product { Id = 2, Name = "bar" }
-            });
+            return new BadRequestObjectResult(ModelState);
         }
+
+        return new ObjectResult(new[]
+        {
+            new Product { Id = 1, Name = "foo" },
+            new Product { Id = 2, Name = "bar" }
+        }.Take(parameters.PageSize)
+         .ToArray());
     }
+}
 
-    public class Product
-    {
-        public int Id { get; internal set;}
+public class Product
+{
+    public int Id { get; internal set;}
 
-        [Required]
-        public string Name { get; set; }
-    }
+    [Required]
+    public string Name { get; set; }
+}
 
-    public class PagingParameters
-    {
-        [BindRequired]
-        public int PageNo { get; set; }
+public class PagingParameters
+{
+    [BindRequired]
+    public int PageNo { get; set; }
 
-        public int PageSize { get; set; } = 20;
-    }
+    public int PageSize { get; set; } = 20;
 }

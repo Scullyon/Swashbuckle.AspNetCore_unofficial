@@ -1,15 +1,14 @@
-﻿using Microsoft.OpenApi.Models;
+﻿using Microsoft.OpenApi;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen.Test
+namespace Swashbuckle.AspNetCore.SwaggerGen.Test;
+
+public class RecursiveCallSchemaFilter : ISchemaFilter
 {
-    public class RecursiveCallSchemaFilter : ISchemaFilter
+    public void Apply(IOpenApiSchema model, SchemaFilterContext context)
     {
-        public void Apply(OpenApiSchema model, SchemaFilterContext context)
+        if (model.Type == JsonSchemaTypes.Object)
         {
-            if (model.Type == "object")
-            {
-                model.Properties.Add("Self", context.SchemaGenerator.GenerateSchema(context.Type, context.SchemaRepository));
-            }
+            model.Properties.Add("Self", context.SchemaGenerator.GenerateSchema(context.Type, context.SchemaRepository));
         }
     }
 }

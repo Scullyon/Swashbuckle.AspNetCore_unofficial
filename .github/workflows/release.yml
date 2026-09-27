@@ -1,0 +1,69 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'If true, does not create the release as a draft.'
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: [ ubuntu-24.04 ]
+
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          filter: 'tree:0'
+          persist-credentials: false
+          show-progress: false
+
+      - name: Get version
+        id: get-version
+        shell: pwsh
+        run: |
+          $properties = Join-Path "." "Directory.Build.props"
+          $xml = [xml](Get-Content $properties)
+          $version = $xml.SelectSingleNode('Project/PropertyGroup/VersionPrefix').InnerText
+          "version=${version}" >> ${env:GITHUB_OUTPUT}
+
+      - name: Create release
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DRAFT: ${{ inputs.publish != true }}
+          VERSION: ${{ steps.get-version.outputs.version }}
+        with:
+          script: |
+            const { repo, owner } = context.repo;
+            const draft = process.env.DRAFT === 'true';
+            const version = process.env.VERSION;
+            const tag_name = `v${version}`;
+            const target_commitish = process.env.DEFAULT_BRANCH;
+            const name = tag_name;
+
+            const { data: release } = await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name,
+              target_commitish,
+              name,
+              draft,
+              generate_release_notes: true,
+            });
+
+            core.notice(`Created release ${release.name}: ${release.html_url}`);

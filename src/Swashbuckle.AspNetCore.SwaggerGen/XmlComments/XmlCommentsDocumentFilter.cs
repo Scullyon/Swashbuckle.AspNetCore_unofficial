@@ -1,53 +1,49 @@
 ﻿using System.Xml.XPath;
-using System.Linq;
-using System.Collections.Generic;
 using Microsoft.AspNetCore.Mvc.Controllers;
-using Microsoft.OpenApi.Models;
-using System;
+using Microsoft.OpenApi;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen
+namespace Swashbuckle.AspNetCore.SwaggerGen;
+
+public class XmlCommentsDocumentFilter(IReadOnlyDictionary<string, XPathNavigator> xmlDocMembers, SwaggerGeneratorOptions options) : IDocumentFilter
 {
-    public class XmlCommentsDocumentFilter : IDocumentFilter
+    private const string SummaryTag = "summary";
+
+    private readonly IReadOnlyDictionary<string, XPathNavigator> _xmlDocMembers = xmlDocMembers;
+    private readonly SwaggerGeneratorOptions _options = options;
+
+    public void Apply(OpenApiDocument swaggerDoc, DocumentFilterContext context)
     {
-        private const string MemberXPath = "/doc/members/member[@name='{0}']";
-        private const string SummaryTag = "summary";
+        // Collect (unique) controller names and types in a dictionary
+        var controllerNamesAndTypes = context.ApiDescriptions
+            .Select(apiDesc => new { ApiDesc = apiDesc, ActionDesc = apiDesc.ActionDescriptor as ControllerActionDescriptor })
+            .Where(x => x.ActionDesc != null)
+            .GroupBy(x => _options?.TagsSelector(x.ApiDesc).FirstOrDefault() ?? x.ActionDesc.ControllerName)
+            .Select(group => new KeyValuePair<string, Type>(group.Key, group.First().ActionDesc.ControllerTypeInfo.AsType()));
 
-        private readonly XPathNavigator _xmlNavigator;
-
-        public XmlCommentsDocumentFilter(XPathDocument xmlDoc)
+        foreach (var nameAndType in controllerNamesAndTypes)
         {
-            _xmlNavigator = xmlDoc.CreateNavigator();
-        }
+            var memberName = XmlCommentsNodeNameHelper.GetMemberNameForType(nameAndType.Value);
 
-        public void Apply(OpenApiDocument swaggerDoc, DocumentFilterContext context)
-        {
-            // Collect (unique) controller names and types in a dictionary
-            var controllerNamesAndTypes = context.ApiDescriptions
-                .Select(apiDesc => apiDesc.ActionDescriptor as ControllerActionDescriptor)
-                .Where(actionDesc => actionDesc != null)
-                .GroupBy(actionDesc => actionDesc.ControllerName)
-                .Select(group => new KeyValuePair<string, Type>(group.Key, group.First().ControllerTypeInfo.AsType()));
-
-            foreach (var nameAndType in controllerNamesAndTypes)
+            if (!_xmlDocMembers.TryGetValue(memberName, out var typeNode))
             {
-                var memberName = XmlCommentsNodeNameHelper.GetMemberNameForType(nameAndType.Value);
-                var typeNode = _xmlNavigator.SelectSingleNode(string.Format(MemberXPath, memberName));
+                continue;
+            }
 
-                if (typeNode != null)
+            var summaryNode = typeNode.SelectFirstChild(SummaryTag);
+            if (summaryNode != null)
+            {
+                swaggerDoc.Tags ??= new HashSet<OpenApiTag>();
+
+                var name = nameAndType.Key;
+                var tag = swaggerDoc.Tags.FirstOrDefault((p) => p?.Name == name);
+
+                if (tag is null)
                 {
-                    var summaryNode = typeNode.SelectSingleNode(SummaryTag);
-                    if (summaryNode != null)
-                    {
-                        if (swaggerDoc.Tags == null)
-                            swaggerDoc.Tags = new List<OpenApiTag>();
-
-                        swaggerDoc.Tags.Add(new OpenApiTag
-                        {
-                            Name = nameAndType.Key,
-                            Description = XmlCommentsTextHelper.Humanize(summaryNode.InnerXml)
-                        });
-                    }
+                    tag = new() { Name = name };
+                    swaggerDoc.Tags.Add(tag);
                 }
+
+                tag.Description ??= XmlCommentsTextHelper.Humanize(summaryNode.InnerXml, _options?.XmlCommentEndOfLine);
             }
         }
     }

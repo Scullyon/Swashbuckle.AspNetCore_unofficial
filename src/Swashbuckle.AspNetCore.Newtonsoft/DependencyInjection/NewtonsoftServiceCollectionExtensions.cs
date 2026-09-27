@@ -1,28 +1,33 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Newtonsoft.Json;
-using Swashbuckle.AspNetCore.SwaggerGen;
+using Microsoft.Extensions.Options;
 using Swashbuckle.AspNetCore.Newtonsoft;
+using Swashbuckle.AspNetCore.SwaggerGen;
 
-#if (NETSTANDARD2_0)
-using MvcNewtonsoftJsonOptions = Microsoft.AspNetCore.Mvc.MvcJsonOptions;
-#endif
+namespace Microsoft.Extensions.DependencyInjection;
 
-namespace Microsoft.Extensions.DependencyInjection
+/// <summary>
+/// A class containing extension methods for setting up Newtonsoft.Json support. This class cannot be inherited.
+/// </summary>
+public static class NewtonsoftServiceCollectionExtensions
 {
-    public static class NewtonsoftServiceCollectionExtensions
+    /// <summary>
+    /// Add support for using Newtonsoft.Json for serializing OpenAPI documents.
+    /// </summary>
+    /// <param name="services">The <see cref="IServiceCollection"/> to configure.</param>
+    /// <returns>
+    /// The <see cref="IServiceCollection"/> so that additional calls can be chained.
+    /// </returns>
+    public static IServiceCollection AddSwaggerGenNewtonsoftSupport(this IServiceCollection services)
     {
-        public static IServiceCollection AddSwaggerGenNewtonsoftSupport(this IServiceCollection services)
-        {
-            return services.Replace(
-                ServiceDescriptor.Transient<ISerializerDataContractResolver>((s) =>
-                {
-                    var serializerSettings = s.GetRequiredService<IOptions<MvcNewtonsoftJsonOptions>>().Value?.SerializerSettings
-                        ?? new JsonSerializerSettings();
+        return services.Replace(
+            ServiceDescriptor.Transient<ISerializerDataContractResolver>((s) =>
+            {
+                var serializerSettings = s.GetRequiredService<IOptions<MvcNewtonsoftJsonOptions>>().Value?.SerializerSettings
+                    ?? new();
+                var generatorOptions = s.GetRequiredService<IOptions<SchemaGeneratorOptions>>().Value;
 
-                    return new NewtonsoftDataContractResolver(serializerSettings);
-                }));
-        }
+                return new NewtonsoftDataContractResolver(serializerSettings, generatorOptions);
+            }));
     }
 }

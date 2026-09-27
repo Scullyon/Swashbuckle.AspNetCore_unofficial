@@ -1,14 +1,13 @@
-﻿using Microsoft.OpenApi.Any;
-using Microsoft.OpenApi.Models;
+﻿using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
-namespace Basic.Swagger
+namespace Basic.Swagger;
+
+public class AssignOperationVendorExtensions : IOperationFilter
 {
-    public class AssignOperationVendorExtensions : IOperationFilter
+    public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
-        public void Apply(OpenApiOperation operation, OperationFilterContext context)
-        {
-            operation.Extensions.Add("x-purpose", new OpenApiString("test"));
-        }
+        operation.Extensions ??= new Dictionary<string, IOpenApiExtension>();
+        operation.Extensions.Add("x-purpose", new JsonNodeExtension("test"));
     }
 }

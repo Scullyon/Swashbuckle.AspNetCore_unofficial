@@ -1,81 +1,83 @@
 ﻿using System.Reflection;
 using System.Xml.XPath;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen
+namespace Swashbuckle.AspNetCore.SwaggerGen;
+
+public class XmlCommentsParameterFilter(IReadOnlyDictionary<string, XPathNavigator> xmlDocMembers, SwaggerGeneratorOptions options) : IParameterFilter
 {
-    public class XmlCommentsParameterFilter : IParameterFilter
+    private readonly IReadOnlyDictionary<string, XPathNavigator> _xmlDocMembers = xmlDocMembers;
+    private readonly SwaggerGeneratorOptions _options = options;
+
+    public void Apply(IOpenApiParameter parameter, ParameterFilterContext context)
     {
-        private XPathNavigator _xmlNavigator;
-
-        public XmlCommentsParameterFilter(XPathDocument xmlDoc)
+        if (context.PropertyInfo != null)
         {
-            _xmlNavigator = xmlDoc.CreateNavigator();
+            ApplyPropertyTags(parameter, context);
+        }
+        else if (context.ParameterInfo != null)
+        {
+            ApplyParamTags(parameter, context);
+        }
+    }
+
+    private void ApplyPropertyTags(IOpenApiParameter parameter, ParameterFilterContext context)
+    {
+        var propertyMemberName = XmlCommentsNodeNameHelper.GetMemberNameForFieldOrProperty(context.PropertyInfo);
+
+        if (!_xmlDocMembers.TryGetValue(propertyMemberName, out var propertyNode)) return;
+
+        var summaryNode = propertyNode.SelectFirstChild("summary");
+        if (summaryNode != null)
+        {
+            parameter.Description = XmlCommentsTextHelper.Humanize(summaryNode.InnerXml, _options?.XmlCommentEndOfLine);
+            parameter.Schema.Description = null; // No need to duplicate
         }
 
-        public void Apply(OpenApiParameter parameter, ParameterFilterContext context)
+        if (parameter is OpenApiParameter concrete)
         {
-            if (context.PropertyInfo != null)
+            var exampleNode = propertyNode.SelectFirstChild("example");
+            if (exampleNode != null)
             {
-                ApplyPropertyTags(parameter, context);
-            }
-            else if (context.ParameterInfo != null)
-            {
-                ApplyParamTags(parameter, context);
+                concrete.Example = XmlCommentsExampleHelper.Create(context.SchemaRepository, parameter.Schema, exampleNode.ToString());
             }
         }
+    }
 
-        private void ApplyPropertyTags(OpenApiParameter parameter, ParameterFilterContext context)
+    private void ApplyParamTags(IOpenApiParameter parameter, ParameterFilterContext context)
+    {
+        if (context.ParameterInfo.Member is not MethodInfo methodInfo)
         {
-            var propertyMemberName = XmlCommentsNodeNameHelper.GetMemberNameForFieldOrProperty(context.PropertyInfo);
-            var propertyNode = _xmlNavigator.SelectSingleNode($"/doc/members/member[@name='{propertyMemberName}']");
-
-            if (propertyNode == null) return;
-
-            var summaryNode = propertyNode.SelectSingleNode("summary");
-            if (summaryNode != null)
-            {
-                parameter.Description = XmlCommentsTextHelper.Humanize(summaryNode.InnerXml);
-                parameter.Schema.Description = null; // no need to duplicate
-            }
-
-            var exampleNode = propertyNode.SelectSingleNode("example");
-            if (exampleNode == null) return;
-
-            var exampleAsJson = (parameter.Schema?.ResolveType(context.SchemaRepository) == "string")
-                ? $"\"{exampleNode.ToString()}\""
-                : exampleNode.ToString();
-
-            parameter.Example = OpenApiAnyFactory.CreateFromJson(exampleAsJson);
+            return;
         }
 
-        private void ApplyParamTags(OpenApiParameter parameter, ParameterFilterContext context)
+        // If method is from a constructed generic type, look for comments from the generic type method
+        var targetMethod = methodInfo.DeclaringType.IsConstructedGenericType
+            ? methodInfo.GetUnderlyingGenericTypeMethod()
+            : methodInfo;
+
+        if (targetMethod == null) return;
+
+        var methodMemberName = XmlCommentsNodeNameHelper.GetMemberNameForMethod(targetMethod);
+
+        if (!_xmlDocMembers.TryGetValue(methodMemberName, out var propertyNode))
         {
-            if (!(context.ParameterInfo.Member is MethodInfo methodInfo)) return;
+            return;
+        }
 
-            // If method is from a constructed generic type, look for comments from the generic type method
-            var targetMethod = methodInfo.DeclaringType.IsConstructedGenericType
-                ? methodInfo.GetUnderlyingGenericTypeMethod()
-                : methodInfo;
+        XPathNavigator paramNode = propertyNode.SelectFirstChildWithAttribute("param", "name", context.ParameterInfo.Name);
 
-            if (targetMethod == null) return;
+        if (paramNode != null)
+        {
+            parameter.Description = XmlCommentsTextHelper.Humanize(paramNode.InnerXml, _options?.XmlCommentEndOfLine);
 
-            var methodMemberName = XmlCommentsNodeNameHelper.GetMemberNameForMethod(targetMethod);
-            var paramNode = _xmlNavigator.SelectSingleNode(
-                $"/doc/members/member[@name='{methodMemberName}']/param[@name='{context.ParameterInfo.Name}']");
-
-            if (paramNode != null)
+            if (parameter is OpenApiParameter concrete)
             {
-                parameter.Description = XmlCommentsTextHelper.Humanize(paramNode.InnerXml);
-
-                var example = paramNode.GetAttribute("example", "");
-                if (string.IsNullOrEmpty(example)) return;
-
-                var exampleAsJson = (parameter.Schema?.ResolveType(context.SchemaRepository) == "string")
-                    ? $"\"{example}\""
-                    : example;
-
-                parameter.Example = OpenApiAnyFactory.CreateFromJson(exampleAsJson);
+                var example = paramNode.SelectSingleNode("@example");
+                if (example != null)
+                {
+                    concrete.Example = XmlCommentsExampleHelper.Create(context.SchemaRepository, parameter.Schema, example.ToString());
+                }
             }
         }
     }

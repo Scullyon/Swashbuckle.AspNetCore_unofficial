@@ -1,31 +1,27 @@
-﻿using System;
-using Microsoft.OpenApi.Any;
-using Microsoft.OpenApi.Models;
+﻿using System.Text.Json.Nodes;
+using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
-namespace Basic.Swagger
+namespace Basic.Swagger;
+
+public class ExamplesSchemaFilter : ISchemaFilter
 {
-    public class ExamplesSchemaFilter : ISchemaFilter
+    public void Apply(IOpenApiSchema schema, SchemaFilterContext context)
     {
-        public void Apply(OpenApiSchema schema, SchemaFilterContext context)
+        if (schema is not OpenApiSchema concrete)
         {
-            schema.Example = GetExampleOrNullFor(context.Type);
+            return;
         }
 
-        private IOpenApiAny GetExampleOrNullFor(Type type)
+        concrete.Example = context.Type.Name switch
         {
-            switch (type.Name)
+            "Product" => new JsonObject
             {
-                case "Product":
-                    return new OpenApiObject
-                    {
-                        [ "id" ] = new OpenApiInteger(123),
-                        [ "description" ] = new OpenApiString("foobar"),
-                        [ "price" ] = new OpenApiDouble(14.37)
-                    };
-                default:
-                    return null;
-            }
-        }
+                ["id"] = 123,
+                ["description"] = "foobar",
+                ["price"] = 14.37d
+            },
+            _ => null,
+        };
     }
 }

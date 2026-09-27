@@ -8,11 +8,12 @@
     <IncludeContentInPack>false</IncludeContentInPack>
     <IncludeSource>false</IncludeSource>
     <IncludeSymbols>false</IncludeSymbols>
-    <MicrosoftExtensionsApiDescriptionServerPackageVersion>6.0.5</MicrosoftExtensionsApiDescriptionServerPackageVersion>
+    <IsPackable>true</IsPackable>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
     <NuspecFile>$(MSBuildProjectName).nuspec</NuspecFile>
     <PackageId>Swashbuckle.AspNetCore</PackageId>
-    <PackageTags>swagger;documentation;discovery;help;webapi;aspnet;aspnetcore</PackageTags>
-    <TargetFrameworks>netstandard2.0;netcoreapp3.0;net5.0;net6.0</TargetFrameworks>
+    <PackageTags>swagger;openapi;documentation;discovery;help;webapi;aspnet;aspnetcore</PackageTags>
+    <TargetFrameworks>$(DefaultTargetFrameworks)</TargetFrameworks>
   </PropertyGroup>
 
   <Target Name="PopulateNuspec">
@@ -23,9 +24,8 @@
         description=$(PackageDescription);
         id=$(PackageId);
         licenseExpression=$(PackageLicenseExpression);
-        licenseUrl=$(LicenseUrl);
-        microsoftExtensionsApiDescriptionServerPackageVersion=$(MicrosoftExtensionsApiDescriptionServerPackageVersion);
         projectUrl=$(PackageProjectUrl);
+        repositoryCommit=$(GITHUB_SHA);
         repositoryType=$(RepositoryType);
         repositoryUrl=$(RepositoryUrl);
         tags=$(PackageTags.Replace(';', ' '));

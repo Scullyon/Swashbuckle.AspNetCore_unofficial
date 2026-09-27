@@ -1,117 +1,278 @@
-﻿using System;
-using System.Globalization;
+﻿using System.Globalization;
 using System.Xml.XPath;
-using System.IO;
-using Microsoft.OpenApi.Models;
-using Xunit;
-using Swashbuckle.AspNetCore.TestSupport;
+using Microsoft.OpenApi;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen.Test
+namespace Swashbuckle.AspNetCore.SwaggerGen.Test;
+
+public class XmlCommentsSchemaFilterTests
 {
-    public class XmlCommentsSchemaFilterTests
+    [Theory]
+    [InlineData(typeof(XmlAnnotatedType), "Summary for XmlAnnotatedType")]
+    [InlineData(typeof(XmlAnnotatedType.NestedType), "Summary for NestedType")]
+    [InlineData(typeof(XmlAnnotatedGenericType<int, string>), "Summary for XmlAnnotatedGenericType")]
+    public void Apply_SetsDescription_FromTypeSummaryTag(
+        Type type,
+        string expectedDescription)
     {
-        [Theory]
-        [InlineData(typeof(XmlAnnotatedType), "Summary for XmlAnnotatedType")]
-        [InlineData(typeof(XmlAnnotatedType.NestedType), "Summary for NestedType")]
-        [InlineData(typeof(XmlAnnotatedGenericType<int, string>), "Summary for XmlAnnotatedGenericType")]
-        public void Apply_SetsDescription_FromTypeSummaryTag(
-            Type type,
-            string expectedDescription)
-        {
-            var schema = new OpenApiSchema { };
-            var filterContext = new SchemaFilterContext(type, null, null);
+        var schema = new OpenApiSchema { };
+        var filterContext = new SchemaFilterContext(type, null, null);
 
-            Subject().Apply(schema, filterContext);
+        Subject().Apply(schema, filterContext);
 
-            Assert.Equal(expectedDescription, schema.Description);
-        }
+        Assert.Equal(expectedDescription, schema.Description);
+    }
 
-        [Fact]
-        public void Apply_SetsDescription_FromFieldSummaryTag()
-        {
-            var fieldInfo = typeof(XmlAnnotatedType).GetField(nameof(XmlAnnotatedType.BoolField));
-            var schema = new OpenApiSchema { };
-            var filterContext = new SchemaFilterContext(fieldInfo.FieldType, null, null, memberInfo: fieldInfo);
+    [Fact]
+    public void Apply_SetsDescription_FromFieldSummaryTag()
+    {
+        var fieldInfo = typeof(XmlAnnotatedType).GetField(nameof(XmlAnnotatedType.BoolField));
+        var schema = new OpenApiSchema { };
+        var filterContext = new SchemaFilterContext(fieldInfo.FieldType, null, null, memberInfo: fieldInfo);
 
-            Subject().Apply(schema, filterContext);
+        Subject().Apply(schema, filterContext);
 
-            Assert.Equal("Summary for BoolField", schema.Description);
-        }
+        Assert.Equal("Summary for BoolField", schema.Description);
+    }
 
-        [Theory]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.StringProperty), "Summary for StringProperty")]
-        [InlineData(typeof(XmlAnnotatedSubType), nameof(XmlAnnotatedType.StringProperty), "Summary for StringProperty")]
-        [InlineData(typeof(XmlAnnotatedGenericType<string, bool>), "GenericProperty", "Summary for GenericProperty")]
-        public void Apply_SetsDescription_FromPropertySummaryTag(
-            Type declaringType,
-            string propertyName,
-            string expectedDescription)
-        {
-            var propertyInfo = declaringType.GetProperty(propertyName);
-            var schema = new OpenApiSchema();
-            var filterContext = new SchemaFilterContext(propertyInfo.PropertyType, null, null, memberInfo: propertyInfo);
+    [Theory]
+    [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.StringProperty), "Summary for StringProperty")]
+    [InlineData(typeof(XmlAnnotatedSubType), nameof(XmlAnnotatedType.StringProperty), "Summary for StringProperty")]
+    [InlineData(typeof(XmlAnnotatedGenericType<string, bool>), "GenericProperty", "Summary for GenericProperty")]
+    public void Apply_SetsDescription_FromPropertySummaryTag(
+        Type declaringType,
+        string propertyName,
+        string expectedDescription)
+    {
+        var propertyInfo = declaringType.GetProperty(propertyName);
+        var schema = new OpenApiSchema();
+        var filterContext = new SchemaFilterContext(propertyInfo.PropertyType, null, null, memberInfo: propertyInfo);
 
-            Subject().Apply(schema, filterContext);
+        Subject().Apply(schema, filterContext);
 
-            Assert.Equal(expectedDescription, schema.Description);
-        }
+        Assert.Equal(expectedDescription, schema.Description);
+    }
 
-        [Theory]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.BoolProperty), "boolean", "true")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.IntProperty), "integer", "10")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.LongProperty), "integer", "4294967295")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.FloatProperty), "number", "1.2")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.DoubleProperty), "number", "1.25")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.EnumProperty), "integer", "2")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.GuidProperty), "string", "\"d3966535-2637-48fa-b911-e3c27405ee09\"")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.StringProperty), "string", "\"Example for StringProperty\"")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.ObjectProperty), "object", "{\n  \"prop1\": 1,\n  \"prop2\": \"foobar\"\n}")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.StringPropertyWithNullExample), "string", "null")]
-        [InlineData(typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.StringPropertyWithUri), "string", "\"https://test.com/a?b=1&c=2\"")]
-        [UseInvariantCulture]
-        public void Apply_SetsExample_FromPropertyExampleTag(
-            Type declaringType,
-            string propertyName,
-            string schemaType,
-            string expectedExampleAsJson)
-        {
-            var propertyInfo = declaringType.GetProperty(propertyName);
-            var schema = new OpenApiSchema { Type = schemaType };
-            var filterContext = new SchemaFilterContext(propertyInfo.PropertyType, null, null, memberInfo: propertyInfo);
+    public static TheoryData<Type, string, JsonSchemaType, string> Apply_SetsExample_FromPropertyExampleTag_Data() => new()
+    {
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.BoolProperty), JsonSchemaTypes.Boolean, "true" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.IntProperty), JsonSchemaTypes.Integer, "10" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.LongProperty), JsonSchemaTypes.Integer, "4294967295" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.FloatProperty), JsonSchemaTypes.Number, "1.2" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.DoubleProperty), JsonSchemaTypes.Number, "1.25" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.DateTimeProperty), JsonSchemaTypes.String, "\"6/22/2022 12:00:00 AM\"" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.EnumProperty), JsonSchemaTypes.Integer, "2" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.GuidProperty), JsonSchemaTypes.String, "\"d3966535-2637-48fa-b911-e3c27405ee09\"" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.StringProperty), JsonSchemaTypes.String, "\"Example for StringProperty\"" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.ObjectProperty), JsonSchemaTypes.Object, "{\n  \"prop1\": 1,\n  \"prop2\": \"foobar\"\n}" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.BoolProperty), JsonSchemaTypes.Boolean, "true" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.IntProperty), JsonSchemaTypes.Integer, "10" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.LongProperty), JsonSchemaTypes.Integer, "4294967295" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.FloatProperty), JsonSchemaTypes.Number, "1.2" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.DoubleProperty), JsonSchemaTypes.Number, "1.25" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.DateTimeProperty), JsonSchemaTypes.String, "\"6/22/2022 12:00:00 AM\"" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.EnumProperty), JsonSchemaTypes.Integer, "2" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.GuidProperty), JsonSchemaTypes.String, "\"d3966535-2637-48fa-b911-e3c27405ee09\"" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.StringProperty), JsonSchemaTypes.String, "\"Example for StringProperty\"" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.ObjectProperty), JsonSchemaTypes.Object, "{\n  \"prop1\": 1,\n  \"prop2\": \"foobar\"\n}" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.StringPropertyWithUri), JsonSchemaTypes.String, "\"https://test.com/a?b=1\\u0026c=2\"" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.StringPropertyWithUri), JsonSchemaTypes.String, "\"https://test.com/a?b=1\\u0026c=2\"" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.StringPropertyWithNullExample), JsonSchemaTypes.String, "null" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.StringPropertyWithNullExample), JsonSchemaTypes.String, "null" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.NullableStringPropertyWithNullExample), JsonSchemaTypes.String | JsonSchemaType.Null, "null" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.NullableStringPropertyWithNullExample), JsonSchemaTypes.String | JsonSchemaType.Null, "null" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.NullableStringPropertyWithNotNullExample), JsonSchemaTypes.String | JsonSchemaType.Null, "\"example\"" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.NullableStringPropertyWithNotNullExample), JsonSchemaTypes.String | JsonSchemaType.Null, "\"example\"" },
+        { typeof(XmlAnnotatedType), nameof(XmlAnnotatedType.NullableIntPropertyWithNotNullExample), JsonSchemaTypes.Integer | JsonSchemaType.Null, "3" },
+        { typeof(XmlAnnotatedRecord), nameof(XmlAnnotatedRecord.NullableIntPropertyWithNotNullExample), JsonSchemaTypes.Integer | JsonSchemaType.Null, "3" },
+    };
 
-            Subject().Apply(schema, filterContext);
+    [Theory]
+    [MemberData(nameof(Apply_SetsExample_FromPropertyExampleTag_Data))]
+    public void Apply_SetsExample_FromPropertyExampleTag(
+        Type declaringType,
+        string propertyName,
+        JsonSchemaType schemaType,
+        string expectedExampleAsJson)
+    {
+        // Arrange
+        CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 
-            Assert.NotNull(schema.Example);
-            Assert.Equal(expectedExampleAsJson, schema.Example.ToJson());
-        }
+        var propertyInfo = declaringType.GetProperty(propertyName);
+        var schema = new OpenApiSchema { Type = schemaType };
+        var filterContext = new SchemaFilterContext(propertyInfo.PropertyType, null, null, memberInfo: propertyInfo);
 
-        [Theory]
-        [InlineData("en-US", 1.2F)]
-        [InlineData("sv-SE", 1.2F)]
-        public void Apply_UsesInvariantCulture_WhenSettingExample(
-            string cultureName,
-            float expectedValue)
-        {
-            var propertyInfo = typeof(XmlAnnotatedType).GetProperty(nameof(XmlAnnotatedType.FloatProperty));
-            var schema = new OpenApiSchema { Type = "number", Format = "float" };
-            var filterContext = new SchemaFilterContext(propertyInfo.PropertyType, null, null, memberInfo: propertyInfo);
+        // Act
+        Subject().Apply(schema, filterContext);
 
-            var defaultCulture = CultureInfo.CurrentCulture;
-            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(cultureName);
+        // Assert
+        Assert.Equal(expectedExampleAsJson, schema.Example?.ToJson());
+    }
 
-            Subject().Apply(schema, filterContext);
+    public static TheoryData<Type, string, JsonSchemaType> Apply_DoesNotSetExample_WhenPropertyExampleTagIsNotProvided_Data => new()
+    {
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.BoolProperty), JsonSchemaTypes.Boolean },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.IntProperty), JsonSchemaTypes.Integer },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.LongProperty), JsonSchemaTypes.Integer },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.FloatProperty), JsonSchemaTypes.Number },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.DoubleProperty), JsonSchemaTypes.Number },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.DateTimeProperty), JsonSchemaTypes.String },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.EnumProperty), JsonSchemaTypes.Integer },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.GuidProperty), JsonSchemaTypes.String },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.StringProperty), JsonSchemaTypes.String },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.ObjectProperty), JsonSchemaTypes.Object },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.StringPropertyWithNullExample), JsonSchemaTypes.String },
+        { typeof(XmlAnnotatedTypeWithoutExample), nameof(XmlAnnotatedTypeWithoutExample.StringPropertyWithUri), JsonSchemaTypes.String },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.BoolProperty), JsonSchemaTypes.Boolean },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.IntProperty), JsonSchemaTypes.Integer },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.LongProperty), JsonSchemaTypes.Integer },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.FloatProperty), JsonSchemaTypes.Number },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.DoubleProperty), JsonSchemaTypes.Number },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.DateTimeProperty), JsonSchemaTypes.String },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.EnumProperty), JsonSchemaTypes.Integer },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.GuidProperty), JsonSchemaTypes.String },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.StringProperty), JsonSchemaTypes.String },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.ObjectProperty), JsonSchemaTypes.Object },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.StringPropertyWithNullExample), JsonSchemaTypes.String },
+        { typeof(XmlAnnotatedRecordWithoutExample), nameof(XmlAnnotatedRecordWithoutExample.StringPropertyWithUri), JsonSchemaTypes.String },
+    };
 
-            CultureInfo.CurrentCulture = defaultCulture;
+    [Theory]
+    [MemberData(nameof(Apply_DoesNotSetExample_WhenPropertyExampleTagIsNotProvided_Data))]
+    public void Apply_DoesNotSetExample_WhenPropertyExampleTagIsNotProvided(
+        Type declaringType,
+        string propertyName,
+        JsonSchemaType schemaType)
+    {
+        // Arrange
+        CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 
-            Assert.Equal(expectedValue, schema.Example.GetType().GetProperty("Value").GetValue(schema.Example));
-        }
+        var propertyInfo = declaringType.GetProperty(propertyName);
+        var schema = new OpenApiSchema { Type = schemaType };
+        var filterContext = new SchemaFilterContext(propertyInfo.PropertyType, null, null, memberInfo: propertyInfo);
 
-        private XmlCommentsSchemaFilter Subject()
-        {
-            using (var xmlComments = File.OpenText(typeof(XmlAnnotatedType).Assembly.GetName().Name + ".xml"))
-            {
-                return new XmlCommentsSchemaFilter(new XPathDocument(xmlComments));
-            }
-        }
+        // Act
+        Subject().Apply(schema, filterContext);
+
+        // Assert
+        Assert.Null(schema.Example);
+    }
+
+    [Theory]
+    [InlineData("en-US", 1.2F)]
+    [InlineData("sv-SE", 1.2F)]
+    public void Apply_UsesInvariantCulture_WhenSettingExample(
+        string cultureName,
+        float expectedValue)
+    {
+        var propertyInfo = typeof(XmlAnnotatedType).GetProperty(nameof(XmlAnnotatedType.FloatProperty));
+        var schema = new OpenApiSchema { Type = JsonSchemaTypes.Number, Format = "float" };
+        var filterContext = new SchemaFilterContext(propertyInfo.PropertyType, null, null, memberInfo: propertyInfo);
+
+        var defaultCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(cultureName);
+
+        Subject().Apply(schema, filterContext);
+
+        CultureInfo.CurrentCulture = defaultCulture;
+
+        Assert.NotNull(schema.Example);
+        Assert.Equal(expectedValue, schema.Example.GetValue<float>());
+    }
+
+    [Fact]
+    public void Apply_DoesNotOverridePropertySummary_WithTypeSummaryFromAnotherXmlCommentsDocument()
+    {
+        // Arrange
+        var propertyInfo = typeof(XmlAnnotatedType).GetProperty(nameof(XmlAnnotatedType.StringProperty));
+        var propertyMemberName = XmlCommentsNodeNameHelper.GetMemberNameForFieldOrProperty(propertyInfo);
+        var typeMemberName = XmlCommentsNodeNameHelper.GetMemberNameForType(propertyInfo.PropertyType);
+
+        // Simulates IncludeXmlComments() being called once for the assembly declaring the
+        // property and once for the assembly declaring the property's type.
+        // See https://github.com/domaindrivendev/Swashbuckle.AspNetCore/issues/3240.
+        var propertyAssemblyFilter = Subject(
+            $"""
+             <doc>
+               <members>
+                 <member name="{propertyMemberName}">
+                   <summary>Summary for StringProperty</summary>
+                 </member>
+               </members>
+             </doc>
+             """);
+
+        var typeAssemblyFilter = Subject(
+            $"""
+             <doc>
+               <members>
+                 <member name="{typeMemberName}">
+                   <summary>Summary for the property's type</summary>
+                 </member>
+               </members>
+             </doc>
+             """);
+
+        var schema = new OpenApiSchema();
+        var filterContext = new SchemaFilterContext(propertyInfo.PropertyType, null, null, memberInfo: propertyInfo);
+
+        // Act
+        propertyAssemblyFilter.Apply(schema, filterContext);
+        typeAssemblyFilter.Apply(schema, filterContext);
+
+        // Assert
+        Assert.Equal("Summary for StringProperty", schema.Description);
+    }
+
+    [Fact]
+    public void Apply_SetsDescription_FromTypeSummaryTagInAnotherXmlCommentsDocument_WhenPropertyHasNoSummary()
+    {
+        // Arrange
+        var propertyInfo = typeof(XmlAnnotatedType).GetProperty(nameof(XmlAnnotatedType.StringProperty));
+        var typeMemberName = XmlCommentsNodeNameHelper.GetMemberNameForType(propertyInfo.PropertyType);
+
+        var propertyAssemblyFilter = Subject(
+            """
+            <doc>
+              <members>
+              </members>
+            </doc>
+            """);
+
+        var typeAssemblyFilter = Subject(
+            $"""
+             <doc>
+               <members>
+                 <member name="{typeMemberName}">
+                   <summary>Summary for the property's type</summary>
+                 </member>
+               </members>
+             </doc>
+             """);
+
+        var schema = new OpenApiSchema();
+        var filterContext = new SchemaFilterContext(propertyInfo.PropertyType, null, null, memberInfo: propertyInfo);
+
+        // Act
+        propertyAssemblyFilter.Apply(schema, filterContext);
+        typeAssemblyFilter.Apply(schema, filterContext);
+
+        // Assert
+        Assert.Equal("Summary for the property's type", schema.Description);
+    }
+
+    private static XmlCommentsSchemaFilter Subject()
+    {
+        using var xml = File.OpenText(typeof(FakeControllerWithXmlComments).Assembly.GetName().Name + ".xml");
+        var document = new XPathDocument(xml);
+        var members = XmlCommentsDocumentHelper.CreateMemberDictionary(document);
+        return new(members, new());
+    }
+
+    private static XmlCommentsSchemaFilter Subject(string xml)
+    {
+        using var reader = new StringReader(xml);
+        var document = new XPathDocument(reader);
+        var members = XmlCommentsDocumentHelper.CreateMemberDictionary(document);
+        return new(members, new());
     }
 }

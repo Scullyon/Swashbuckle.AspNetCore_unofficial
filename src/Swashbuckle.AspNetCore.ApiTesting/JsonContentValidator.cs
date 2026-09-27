@@ -1,32 +1,25 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Net.Http;
-using Microsoft.OpenApi.Models;
+﻿using Microsoft.OpenApi;
 using Newtonsoft.Json.Linq;
 
-namespace Swashbuckle.AspNetCore.ApiTesting
+namespace Swashbuckle.AspNetCore.ApiTesting;
+
+public sealed class JsonContentValidator : IContentValidator
 {
-    public class JsonContentValidator : IContentValidator
+    private readonly JsonValidator _jsonValidator = new();
+
+    public bool CanValidate(string mediaType) => mediaType.Contains("json");
+
+    public void Validate(OpenApiMediaType mediaTypeSpec, OpenApiDocument openApiDocument, HttpContent content)
     {
-        private readonly JsonValidator _jsonValidator;
-
-        public JsonContentValidator()
+        if (mediaTypeSpec?.Schema == null)
         {
-            _jsonValidator = new JsonValidator();
+            return;
         }
 
-        public bool CanValidate(string mediaType)
+        var instance = JToken.Parse(content.ReadAsStringAsync().Result);
+        if (!_jsonValidator.Validate(mediaTypeSpec.Schema, openApiDocument, instance, out IEnumerable<string> errorMessages))
         {
-            return mediaType.Contains("json");
-        }
-
-        public void Validate(OpenApiMediaType mediaTypeSpec, OpenApiDocument openApiDocument, HttpContent content)
-        {
-            if (mediaTypeSpec?.Schema == null) return;
-
-            var instance = JToken.Parse(content.ReadAsStringAsync().Result);
-            if (!_jsonValidator.Validate(mediaTypeSpec.Schema, openApiDocument, instance, out IEnumerable<string> errorMessages))
-                throw new ContentDoesNotMatchSpecException(string.Join(Environment.NewLine, errorMessages));
+            throw new ContentDoesNotMatchSpecException(string.Join(Environment.NewLine, errorMessages));
         }
     }
 }

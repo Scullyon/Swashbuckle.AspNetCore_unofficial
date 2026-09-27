@@ -1,117 +1,156 @@
-﻿using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
+using System.Diagnostics;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 
-namespace Basic.Controllers
+namespace Basic.Controllers;
+
+/// <summary>
+/// Summary for CrudActionsController
+/// </summary>
+[Route("/products")]
+[Produces("application/json")]
+public class CrudActionsController
 {
     /// <summary>
-    /// Summary for CrudActionsController
+    /// Creates a <paramref name="product"/>
     /// </summary>
-    [Route("/products")]
-    [Produces("application/json")]
-    public class CrudActionsController
+    /// <remarks>
+    /// ## Heading 1
+    /// 
+    ///     POST /products
+    ///     {
+    ///         "id": "123",
+    ///         "description": "Some product"
+    ///     }
+    /// 
+    /// </remarks>
+    /// <param name="product"></param>
+    /// <returns></returns>
+    [HttpPost(Name = "CreateProduct")]
+#if NET10_0_OR_GREATER
+    public Ok<Product> Create([FromBody, Required] Product product)
     {
-        /// <summary>
-        /// Creates a <paramref name="product"/>
-        /// </summary>
-        /// <remarks>
-        /// ## Heading 1
-        /// 
-        ///     POST /products
-        ///     {
-        ///         "id": "123",
-        ///         "description": "Some product"
-        ///     }
-        /// 
-        /// </remarks>
-        /// <param name="product"></param>
-        /// <returns></returns>
-        [HttpPost(Name = "CreateProduct")]
-        public Product Create([FromBody, Required]Product product)
-        {
-            return product;
-        }
-
-        /// <summary>
-        /// Searches the collection of products by description key words
-        /// </summary>
-        /// <param name="keywords" example="hello">A list of search terms</param>
-        /// <returns></returns>
-        [HttpGet(Name = "SearchProducts")]
-        public IEnumerable<Product> Get([FromQuery(Name = "kw")]string keywords = "foobar")
-        {
-            return new[]
-            {
-                new Product { Id = 1, Description = "A product" },
-                new Product { Id = 2, Description = "Another product" },
-            };
-        }
-
-        /// <summary>
-        /// Returns a specific product
-        /// </summary>
-        /// <param name="id" example="111">The product id</param>
-        /// <returns></returns>
-        [HttpGet("{id}", Name = "GetProduct")]
-        public Product Get(int id)
-        {
-            return new Product { Id = id, Description = "A product" };
-        }
-
-        /// <summary>
-        /// Updates all properties of a specific product
-        /// </summary>
-        /// <param name="id" example="222"></param>
-        /// <param name="product"></param>
-        [HttpPut("{id}", Name = "UpdateProduct")]
-        public void Update(int id, [FromBody, Required]Product product)
-        {
-        }
-
-        /// <summary>
-        /// Updates some properties of a specific product
-        /// </summary>
-        /// <param name="id" example="333"></param>
-        /// <param name="updates"></param>
-        [HttpPatch("{id}", Name = "PatchProduct")]
-        public void Patch(int id, [FromBody, Required]IDictionary<string, object> updates)
-        {
-        }
-
-        /// <summary>
-        /// Deletes a specific product
-        /// </summary>
-        /// <param name="id" example="444"></param>
-        [HttpDelete("{id}", Name = "DeleteProduct")]
-        public void Delete(int id)
-        {
-        }
+        return TypedResults.Ok(product);
     }
-
-    public enum ProductStatus
+#else
+    public Product Create([FromBody, Required] Product product)
     {
-        All = 0,
-        OutOfStock = 1,
-        InStock = 2
+        return product;
+    }
+#endif
+
+    /// <summary>Get all products</summary>
+    /// <remarks>
+    /// <code>
+    /// {
+    ///   "Id":1,
+    ///   "Description":"",
+    ///   "Status": 0,
+    ///   "Status2": 1
+    /// }
+    /// </code>
+    /// </remarks>
+    [HttpGet("all")]
+    public List<Product> GetAll() => [];
+
+    /// <summary>
+    /// Searches the collection of products by description key words
+    /// </summary>
+    /// <param name="keywords" example="hello">A list of search terms</param>
+    /// <returns></returns>
+    [HttpGet(Name = "SearchProducts")]
+    public IEnumerable<Product> Get([FromQuery(Name = "kw")] string keywords = "foobar")
+    {
+        Debug.Assert(keywords is not null);
+
+        return
+        [
+            new Product { Id = 1, Description = "A product" },
+            new Product { Id = 2, Description = "Another product" },
+        ];
     }
 
     /// <summary>
-    /// Represents a product
+    /// Returns a specific product
     /// </summary>
-    public class Product
+    /// <param name="id" example="111">The product id</param>
+    /// <returns></returns>
+    [HttpGet("{id}", Name = "GetProduct")]
+    public Product Get(int id)
     {
-        /// <summary>
-        /// Uniquely identifies the product
-        /// </summary>
-        public int Id { get; set; }
-
-        /// <summary>
-        /// Describes the product
-        /// </summary>
-        public string Description { get; set; }
-
-        public ProductStatus Status { get; set; }
-
-        public ProductStatus? Status2 { get; set; }
+        return new Product { Id = id, Description = "A product" };
     }
+
+    /// <summary>
+    /// Updates all properties of a specific product
+    /// </summary>
+    /// <param name="id" example="222"></param>
+    /// <param name="product"></param>
+    [HttpPut("{id}", Name = "UpdateProduct")]
+    public void Update(int id, [FromBody, Required] Product product)
+    {
+        Debug.Assert(id >= 0);
+        Debug.Assert(product is not null);
+    }
+
+    /// <summary>
+    /// Updates some properties of a specific product
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Only provided properties will be updated,
+    ///         other remain unchanged.
+    ///     </para>
+    ///     <para>       Identifier must be non-default value     </para>
+    ///     <para>Body must be specified</para>
+    /// </remarks>
+    /// <param name="id" example="333"></param>
+    /// <param name="updates"></param>
+    [HttpPatch("{id}", Name = "PatchProduct")]
+    public void Patch(int id, [FromBody, Required] IDictionary<string, object> updates)
+    {
+        Debug.Assert(id >= 0);
+        Debug.Assert(updates is not null);
+    }
+
+    /// <summary>
+    /// Deletes a specific product
+    /// </summary>
+    /// <param name="id" example="444"></param>
+    [HttpDelete("{id}", Name = "DeleteProduct")]
+    public void Delete(int id)
+    {
+        Debug.Assert(id >= 0);
+    }
+}
+
+public enum ProductStatus
+{
+    All = 0,
+    OutOfStock = 1,
+    InStock = 2,
+}
+
+/// <summary>
+/// Represents a product
+/// </summary>
+public class Product
+{
+    /// <summary>
+    /// Uniquely identifies the product
+    /// </summary>
+    public int Id { get; set; }
+
+    /// <summary>
+    /// Describes the product
+    /// </summary>
+    public string Description { get; set; }
+
+    public ProductStatus Status { get; set; }
+
+    public ProductStatus? Status2 { get; set; }
+
+    [Range(0.1, 122.9, MinimumIsExclusive = true, MaximumIsExclusive = true)]
+    public double? Price { get; set; }
 }

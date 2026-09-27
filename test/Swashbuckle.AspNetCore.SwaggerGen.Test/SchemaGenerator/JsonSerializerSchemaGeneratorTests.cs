@@ -1,872 +1,1959 @@
-﻿using System;
-using System.Collections;
-using System.Collections.Generic;
+﻿using System.Collections;
+using System.ComponentModel.DataAnnotations;
 using System.Dynamic;
-using System.Linq;
+using System.Globalization;
+using System.Net;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Net;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Constraints;
-using Microsoft.OpenApi.Models;
-using Xunit;
+using Microsoft.OpenApi;
+using Swashbuckle.AspNetCore.SwaggerGen.Test.Fixtures;
 using Swashbuckle.AspNetCore.TestSupport;
-using Microsoft.OpenApi.Any;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen.Test
+namespace Swashbuckle.AspNetCore.SwaggerGen.Test;
+
+public class JsonSerializerSchemaGeneratorTests
 {
-    public class JsonSerializerSchemaGeneratorTests
+    [Theory]
+    [InlineData(typeof(IFormFile))]
+    [InlineData(typeof(FileResult))]
+    [InlineData(typeof(Stream))]
+    [InlineData(typeof(System.IO.Pipelines.PipeReader))]
+    public void GenerateSchema_GeneratesFileSchema_BinaryStringResultType(Type type)
     {
-        [Theory]
-        [InlineData(typeof(IFormFile))]
-        [InlineData(typeof(FileResult))]
-        public void GenerateSchema_GeneratesFileSchema_IfFormFileOrFileResultType(Type type)
+        var schema = Subject().GenerateSchema(type, new SchemaRepository());
+
+        Assert.Equal(JsonSchemaTypes.String, schema.Type);
+        Assert.Equal("binary", schema.Format);
+    }
+
+    public static TheoryData<Type, JsonSchemaType, string> PrimitiveTypeData => new()
+    {
+        { typeof(bool), JsonSchemaTypes.Boolean, null },
+        { typeof(byte), JsonSchemaTypes.Integer, "int32" },
+        { typeof(sbyte), JsonSchemaTypes.Integer, "int32" },
+        { typeof(short), JsonSchemaTypes.Integer, "int32" },
+        { typeof(ushort), JsonSchemaTypes.Integer, "int32" },
+        { typeof(int), JsonSchemaTypes.Integer, "int32" },
+        { typeof(uint), JsonSchemaTypes.Integer, "int32" },
+        { typeof(long), JsonSchemaTypes.Integer, "int64" },
+        { typeof(ulong), JsonSchemaTypes.Integer, "int64" },
+        { typeof(float), JsonSchemaTypes.Number, "float" },
+        { typeof(double), JsonSchemaTypes.Number, "double" },
+        { typeof(decimal), JsonSchemaTypes.Number, "double" },
+        { typeof(string), JsonSchemaTypes.String, null },
+        { typeof(char), JsonSchemaTypes.String, null },
+        { typeof(byte[]), JsonSchemaTypes.String, "byte" },
+        { typeof(DateTime), JsonSchemaTypes.String, "date-time" },
+        { typeof(DateTimeOffset), JsonSchemaTypes.String, "date-time" },
+        { typeof(TimeSpan), JsonSchemaTypes.String, "date-span" },
+        { typeof(Guid), JsonSchemaTypes.String, "uuid" },
+        { typeof(Uri), JsonSchemaTypes.String, "uri" },
+        { typeof(Version), JsonSchemaTypes.String, null },
+        { typeof(DateOnly), JsonSchemaTypes.String, "date" },
+        { typeof(TimeOnly), JsonSchemaTypes.String, "time" },
+        { typeof(bool?), JsonSchemaTypes.Boolean | JsonSchemaType.Null, null },
+        { typeof(int?), JsonSchemaTypes.Integer | JsonSchemaType.Null, "int32" },
+        { typeof(DateTime?), JsonSchemaTypes.String | JsonSchemaType.Null, "date-time" },
+        { typeof(Guid?), JsonSchemaTypes.String | JsonSchemaType.Null, "uuid" },
+        { typeof(DateOnly?), JsonSchemaTypes.String | JsonSchemaType.Null, "date" },
+        { typeof(TimeOnly?), JsonSchemaTypes.String | JsonSchemaType.Null, "time" },
+        { typeof(Int128), JsonSchemaTypes.Integer, "int128" },
+        { typeof(Int128?), JsonSchemaTypes.Integer | JsonSchemaType.Null, "int128" },
+        { typeof(UInt128), JsonSchemaTypes.Integer, "int128" },
+        { typeof(UInt128?), JsonSchemaTypes.Integer | JsonSchemaType.Null, "int128" },
+    };
+
+    [Theory]
+    [MemberData(nameof(PrimitiveTypeData))]
+    public void GenerateSchema_GeneratesPrimitiveSchema_IfPrimitiveOrNullablePrimitiveType(
+        Type type,
+        JsonSchemaType expectedSchemaType,
+        string expectedFormat)
+    {
+        var schema = Subject().GenerateSchema(type, new SchemaRepository());
+
+        Assert.Equal(expectedSchemaType, schema.Type);
+        Assert.Equal(expectedFormat, schema.Format);
+    }
+
+    [Theory]
+    [InlineData(typeof(IntEnum), JsonSchemaType.Integer, "int32", "2", "4", "8")]
+    [InlineData(typeof(LongEnum), JsonSchemaType.Integer, "int64", "2", "4", "8")]
+    [InlineData(typeof(IntEnum?), JsonSchemaType.Integer, "int32", "2", "4", "8")]
+    [InlineData(typeof(LongEnum?), JsonSchemaType.Integer, "int64", "2", "4", "8")]
+    public void GenerateSchema_GeneratesReferencedEnumSchema_IfEnumOrNullableEnumType(
+        Type type,
+        JsonSchemaType expectedType,
+        string expectedFormat,
+        params string[] expectedEnumAsJson)
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(expectedType, schema.Type);
+        Assert.Equal(expectedFormat, schema.Format);
+        Assert.NotNull(schema.Enum);
+        Assert.Equal(expectedEnumAsJson, schema.Enum.Select(openApiAny => openApiAny?.ToJson()).ToArray());
+    }
+
+    [Fact]
+    public void GenerateSchema_DedupesEnumValues_IfEnumTypeHasDuplicateValues()
+    {
+        var enumType = typeof(HttpStatusCode);
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(enumType, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(enumType.GetEnumValues().Cast<HttpStatusCode>().Distinct().Count(), schema.Enum.Count);
+    }
+
+#nullable enable
+    public static TheoryData<Type, JsonSchemaType?> CollectionTypeData => new()
+    {
+        { typeof(IDictionary<string, int>), JsonSchemaTypes.Integer },
+        { typeof(IDictionary<EmptyIntEnum, int>), JsonSchemaTypes.Integer },
+        { typeof(IReadOnlyDictionary<string, bool>), JsonSchemaTypes.Boolean },
+        { typeof(IDictionary), null },
+        { typeof(ExpandoObject), null },
+    };
+
+    [Theory]
+    [MemberData(nameof(CollectionTypeData))]
+    public void GenerateSchema_GeneratesDictionarySchema_IfDictionaryType(
+        Type type,
+        JsonSchemaType? expectedAdditionalPropertiesType)
+    {
+        var schema = Subject().GenerateSchema(type, new SchemaRepository());
+
+        Assert.Equal(JsonSchemaTypes.Object, schema.Type);
+        Assert.True(schema.AdditionalPropertiesAllowed);
+        Assert.NotNull(schema.AdditionalProperties);
+        Assert.Equal(expectedAdditionalPropertiesType, schema.AdditionalProperties.Type);
+    }
+#nullable restore
+
+    [Fact]
+    public void GenerateSchema_GeneratesReferencedDictionarySchema_IfDictionaryTypeIsSelfReferencing()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(DictionaryOfSelf), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Object, schema.Type);
+        Assert.True(schema.AdditionalPropertiesAllowed);
+        Assert.NotNull(schema.AdditionalProperties);
+        var additionalReference = Assert.IsType<OpenApiSchemaReference>(schema.AdditionalProperties);
+        Assert.Equal(additionalReference.Reference.Id, reference.Reference.Id); // ref to self
+    }
+
+#nullable enable
+    public static TheoryData<Type, JsonSchemaType?, string?> EnumerableTypeData => new()
+    {
+        { typeof(int[]), JsonSchemaTypes.Integer, "int32" },
+        { typeof(int?[]), JsonSchemaTypes.Integer | JsonSchemaType.Null, "int32" },
+        { typeof(double[]), JsonSchemaTypes.Number, "double" },
+        { typeof(double?[]), JsonSchemaTypes.Number | JsonSchemaType.Null, "double" },
+        { typeof(DateTime[]), JsonSchemaTypes.String, "date-time" },
+        { typeof(DateTime?[]), JsonSchemaTypes.String | JsonSchemaType.Null, "date-time" },
+        { typeof(IEnumerable<string>), JsonSchemaTypes.String, null },
+        { typeof(int[][]), JsonSchemaTypes.Array, null },
+        { typeof(IList), null, null },
+    };
+
+    [Theory]
+    [MemberData(nameof(EnumerableTypeData))]
+    public void GenerateSchema_GeneratesArraySchema_IfEnumerableType(
+        Type type,
+        JsonSchemaType? expectedItemsType,
+        string? expectedItemsFormat)
+    {
+        var schema = Subject().GenerateSchema(type, new SchemaRepository());
+
+        Assert.Equal(JsonSchemaTypes.Array, schema.Type);
+        Assert.NotNull(schema.Items);
+        Assert.Equal(expectedItemsType, schema.Items.Type);
+        Assert.Equal(expectedItemsFormat, schema.Items.Format);
+    }
+#nullable restore
+
+    [Theory]
+    [InlineData(typeof(ISet<string>))]
+    [InlineData(typeof(SortedSet<string>))]
+    [InlineData(typeof(KeyedCollectionOfComplexType))]
+    public void GenerateSchema_SetsUniqueItems_IfEnumerableTypeIsSetOrKeyedCollection(Type type)
+    {
+        var schema = Subject().GenerateSchema(type, new SchemaRepository());
+
+        Assert.Equal(JsonSchemaTypes.Array, schema.Type);
+        Assert.True(schema.UniqueItems);
+    }
+
+    [Fact]
+    public void GenerateSchema_GeneratesReferencedArraySchema_IfEnumerableTypeIsSelfReferencing()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(ListOfSelf), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Array, schema.Type);
+        var itemsReference = Assert.IsType<OpenApiSchemaReference>(schema.Items);
+        Assert.Equal(itemsReference.Reference.Id, reference.Reference.Id); // ref to self
+    }
+
+    [Theory]
+    [InlineData(typeof(ComplexType), "ComplexType", new[] { "Property1", "Property2", "Property3" })]
+    [InlineData(typeof(GenericType<bool, int>), "BooleanInt32GenericType", new[] { "Property1", "Property2" })]
+    [InlineData(typeof(GenericType<bool, int[]>), "BooleanInt32ArrayGenericType", new[] { "Property1", "Property2" })]
+    [InlineData(typeof(ContainingType.NestedType), "NestedType", new[] { "Property2" })]
+    public void GenerateSchema_GeneratesReferencedObjectSchema_IfComplexType(
+        Type type,
+        string expectedSchemaId,
+        string[] expectedProperties)
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        Assert.Equal(expectedSchemaId, reference.Reference.Id);
+        var schema = schemaRepository.Schemas[expectedSchemaId];
+        Assert.Equal(JsonSchemaTypes.Object, schema.Type);
+        Assert.Equal(expectedProperties, schema.Properties.Keys);
+        Assert.False(schema.AdditionalPropertiesAllowed);
+    }
+
+    [Fact]
+    public void GenerateSchema_IncludesInheritedProperties_IfComplexTypeIsDerived()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(SubType1), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Object, schema.Type);
+        Assert.Equal(["BaseProperty", "Property1"], schema.Properties.Keys);
+    }
+
+    [Theory]
+    [InlineData(typeof(IBaseInterface), new[] { "BaseProperty" })]
+    [InlineData(typeof(ISubInterface1), new[] { "BaseProperty", "Property1" })]
+    [InlineData(typeof(ISubInterface2), new[] { "BaseProperty", "Property2" })]
+    [InlineData(typeof(IMultiSubInterface), new[] { "BaseProperty", "Property1", "Property2", "Property3" })]
+    public void GenerateSchema_IncludesInheritedProperties_IfTypeIsAnInterfaceHierarchy(
+        Type type,
+        string[] expectedPropertyNames)
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Object, schema.Type);
+        Assert.Equal(expectedPropertyNames.OrderBy(n => n), schema.Properties.Keys.OrderBy(k => k));
+    }
+
+    [Fact]
+    public void GenerateSchema_KeepMostDerivedType_IfTypeIsAnInterface()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(INewBaseInterface), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Integer, schema.Properties["BaseProperty"].Type);
+    }
+
+    [Fact]
+    public void GenerateSchema_ExcludesIndexerProperties_IfComplexTypeIsIndexed()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(IndexedType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Object, schema.Type);
+        Assert.Equal(["Property1"], schema.Properties.Keys);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableProperties), nameof(TypeWithNullableProperties.IntProperty), false)]
+    [InlineData(typeof(TypeWithNullableProperties), nameof(TypeWithNullableProperties.StringProperty), true)]
+    [InlineData(typeof(TypeWithNullableProperties), nameof(TypeWithNullableProperties.NullableIntProperty), true)]
+    public void GenerateSchema_SetsNullableFlag_IfPropertyIsReferenceOrNullableType(
+        Type declaringType,
+        string propertyName,
+        bool expectedNullable)
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(declaringType, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(expectedNullable, schema.Properties[propertyName].Type.Value.HasFlag(JsonSchemaType.Null));
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.BoolWithDefault), "true")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.IntWithDefault), "2147483647")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.LongWithDefault), "9223372036854775807")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.FloatWithDefault), "3.4028235E+38")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.DoubleWithDefault), "1.7976931348623157E+308")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.DoubleWithDefaultOfDifferentType), "1")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.StringWithDefault), "\"foobar\"")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.IntArrayWithDefault), "[\n  1,\n  2,\n  3\n]")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.StringArrayWithDefault), "[\n  \"foo\",\n  \"bar\"\n]")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.NullableIntWithDefaultNullValue), null)]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.NullableIntWithDefaultValue), "2147483647")]
+    [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.EnumWithDefaultValue), "4")]
+    public void GenerateSchema_SetsDefault_IfPropertyHasDefaultValueAttribute(
+        Type declaringType,
+        string propertyName,
+        string expectedDefaultAsJson)
+    {
+        // Arrange
+        CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+
+        var schemaRepository = new SchemaRepository();
+
+        // Act
+        var referenceSchema = Subject().GenerateSchema(declaringType, schemaRepository);
+
+        // Assert
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        var propertySchema = schema.Properties[propertyName];
+        Assert.Equal(expectedDefaultAsJson, propertySchema.Default?.ToJson());
+    }
+
+    [Fact]
+    public void GenerateSchema_SetsDeprecatedFlag_IfPropertyHasObsoleteAttribute()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(TypeWithObsoleteAttribute), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.True(schema.Properties["ObsoleteProperty"].Deprecated);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithValidationAttributes))]
+    [InlineData(typeof(TypeWithValidationAttributesViaMetadataType))]
+    public void GenerateSchema_SetsValidationProperties_IfComplexTypeHasValidationAttributes(Type type)
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal("credit-card", schema.Properties["StringWithDataTypeCreditCard"].Format);
+        Assert.Equal(1, schema.Properties["StringWithMinMaxLength"].MinLength);
+        Assert.Equal(3, schema.Properties["StringWithMinMaxLength"].MaxLength);
+        Assert.Equal(1, schema.Properties["ArrayWithMinMaxLength"].MinItems);
+        Assert.Equal(3, schema.Properties["ArrayWithMinMaxLength"].MaxItems);
+        Assert.Equal(1, schema.Properties["BoundedReadOnlyDictionary"].MinProperties);
+        Assert.Equal(3, schema.Properties["BoundedReadOnlyDictionary"].MaxProperties);
+        Assert.Null(schema.Properties["BoundedReadOnlyDictionary"].MinLength);
+        Assert.Null(schema.Properties["BoundedReadOnlyDictionary"].MaxLength);
+        Assert.Equal(1, schema.Properties["StringWithLength"].MinLength);
+        Assert.Equal(3, schema.Properties["StringWithLength"].MaxLength);
+        Assert.Equal(1, schema.Properties["ArrayWithLength"].MinItems);
+        Assert.Equal(3, schema.Properties["ArrayWithLength"].MaxItems);
+        Assert.Equal(1, schema.Properties["BoundedDictionary"].MinProperties);
+        Assert.Equal(3, schema.Properties["BoundedDictionary"].MaxProperties);
+        Assert.NotNull(schema.Properties["IntWithExclusiveRange"].ExclusiveMinimum);
+        Assert.NotNull(schema.Properties["IntWithExclusiveRange"].ExclusiveMaximum);
+        Assert.Equal("byte", schema.Properties["StringWithBase64"].Format);
+        Assert.Equal(JsonSchemaTypes.String | JsonSchemaType.Null, schema.Properties["StringWithBase64"].Type);
+        Assert.Null(schema.Properties["IntWithRange"].ExclusiveMinimum);
+        Assert.Null(schema.Properties["IntWithRange"].ExclusiveMaximum);
+        Assert.Equal("1", schema.Properties["IntWithRange"].Minimum);
+        Assert.Equal("10", schema.Properties["IntWithRange"].Maximum);
+        Assert.Equal("^[3-6]?\\d{12,15}$", schema.Properties["StringWithRegularExpression"].Pattern);
+        Assert.Equal(5, schema.Properties["StringWithStringLength"].MinLength);
+        Assert.Equal(10, schema.Properties["StringWithStringLength"].MaxLength);
+        Assert.Equal(1, schema.Properties["StringWithRequired"].MinLength);
+        AssertIsNullable(schema.Properties["StringWithRequired"], false);
+        AssertIsNullable(schema.Properties["StringWithRequiredAllowEmptyTrue"], false);
+        Assert.Null(schema.Properties["StringWithRequiredAllowEmptyTrue"].MinLength);
+        Assert.Equal(["NullableIntEnumWithRequired", "StringWithRequired", "StringWithRequiredAllowEmptyTrue"], schema.Required);
+        Assert.Equal("Description", schema.Properties[nameof(TypeWithValidationAttributes.StringWithDescription)].Description);
+        Assert.True(schema.Properties[nameof(TypeWithValidationAttributes.StringWithReadOnly)].ReadOnly);
+    }
+
+    [Fact]
+    public void GenerateSchema_SetsReadOnlyAndWriteOnlyFlags_IfPropertyIsRestricted()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(TypeWithRestrictedProperties), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.False(schema.Properties["ReadWriteProperty"].ReadOnly);
+        Assert.False(schema.Properties["ReadWriteProperty"].WriteOnly);
+        Assert.True(schema.Properties["ReadOnlyProperty"].ReadOnly);
+        Assert.False(schema.Properties["ReadOnlyProperty"].WriteOnly);
+        Assert.False(schema.Properties["WriteOnlyProperty"].ReadOnly);
+        Assert.True(schema.Properties["WriteOnlyProperty"].WriteOnly);
+    }
+
+    public class TypeWithRequiredProperties
+    {
+        public required string RequiredString { get; set; }
+        public required int RequiredInt { get; set; }
+    }
+
+    public class TypeWithRequiredPropertyAndValidationAttribute
+    {
+        [MinLength(1)]
+        public required string RequiredProperty { get; set; }
+    }
+
+    [Fact]
+    public void GenerateSchema_SetsRequired_IfPropertyHasRequiredKeyword()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(TypeWithRequiredProperties), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        AssertIsNullable(schema.Properties["RequiredString"]);
+        Assert.Contains("RequiredString", schema.Required.ToArray());
+        AssertIsNullable(schema.Properties["RequiredInt"], false);
+        Assert.Contains("RequiredInt", schema.Required.ToArray());
+    }
+
+    [Fact]
+    public void GenerateSchema_SetsRequired_IfPropertyHasRequiredKeywordAndValidationAttribute()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(TypeWithRequiredPropertyAndValidationAttribute), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(1, schema.Properties["RequiredProperty"].MinLength);
+        AssertIsNullable(schema.Properties["RequiredProperty"]);
+        Assert.Equal(["RequiredProperty"], schema.Required);
+    }
+
+#nullable enable
+    public class TypeWithNullableReferenceTypes
+    {
+        public required string? RequiredNullableString { get; set; }
+        public required string RequiredNonNullableString { get; set; }
+    }
+
+    [Fact]
+    public void GenerateSchema_SetsRequiredAndNullable_IfPropertyHasRequiredKeywordAndIsNullable()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject(configureGenerator: (c) => c.SupportNonNullableReferenceTypes = true).GenerateSchema(typeof(TypeWithNullableReferenceTypes), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+
+        Assert.NotNull(reference);
+        Assert.NotNull(reference.Reference);
+        Assert.NotNull(reference.Reference.Id);
+
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.NotNull(schema.Properties);
+        AssertIsNullable(schema.Properties["RequiredNullableString"]);
+        Assert.NotNull(schema.Required);
+        Assert.Contains("RequiredNullableString", schema.Required.ToArray());
+        AssertIsNullable(schema.Properties["RequiredNonNullableString"], false);
+        Assert.Contains("RequiredNonNullableString", schema.Required.ToArray());
+    }
+
+    [Fact]
+    public void GenerateSchema_NonNullableReferenceTypesAsRequired_PreservesNullable_IfPropertyHasRequiredKeywordAndIsNullable()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject(configureGenerator: (c) => c.NonNullableReferenceTypesAsRequired = true).GenerateSchema(typeof(TypeWithNullableReferenceTypes), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+
+        Assert.NotNull(reference);
+        Assert.NotNull(reference.Reference);
+        Assert.NotNull(reference.Reference.Id);
+
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.NotNull(schema.Properties);
+        Assert.NotNull(schema.Required);
+
+        // required string? - must be present (required) AND may be null (nullable: true)
+        AssertIsNullable(schema.Properties["RequiredNullableString"]);
+        Assert.Contains("RequiredNullableString", schema.Required.ToArray());
+
+        // required string - must be present (required) AND must have a value (nullable: false)
+        AssertIsNullable(schema.Properties["RequiredNonNullableString"], false);
+        Assert.Contains("RequiredNonNullableString", schema.Required.ToArray());
+    }
+#nullable disable
+
+    [Theory]
+    [InlineData(typeof(TypeWithParameterizedConstructor), nameof(TypeWithParameterizedConstructor.Id), false)]
+    [InlineData(typeof(TypeWithParameterlessAndParameterizedConstructor), nameof(TypeWithParameterlessAndParameterizedConstructor.Id), true)]
+    [InlineData(typeof(TypeWithParameterlessAndJsonAnnotatedConstructor), nameof(TypeWithParameterlessAndJsonAnnotatedConstructor.Id), false)]
+    public void GenerateSchema_DoesNotSetReadOnlyFlag_IfPropertyIsReadOnlyButCanBeSetViaConstructor(
+        Type type,
+        string propertyName,
+        bool expectedReadOnly
+    )
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(expectedReadOnly, schema.Properties[propertyName].ReadOnly);
+    }
+
+    [Fact]
+    public void GenerateSchema_SetsDefault_IfParameterHasDefaultValueAttribute()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var parameterInfo = typeof(FakeController)
+            .GetMethod(nameof(FakeController.ActionWithIntParameterWithDefaultValueAttribute))
+            .GetParameters()
+            .First();
+
+        var schema = Subject().GenerateSchema(parameterInfo.ParameterType, schemaRepository, parameterInfo: parameterInfo);
+
+        Assert.NotNull(schema.Default);
+        Assert.Equal("3", schema.Default.ToJson());
+    }
+
+    [Fact]
+    public void GenerateSchema_SetsDefault_IfParameterHasEnumDefaultValueAttribute()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var parameterInfo = typeof(FakeController)
+            .GetMethod(nameof(FakeController.ActionWithEnumParameterWithDefaultValueAttribute))
+            .GetParameters()
+            .First();
+
+        var schema = Subject().GenerateSchema(parameterInfo.ParameterType, schemaRepository, parameterInfo: parameterInfo);
+
+        Assert.NotNull(schema.Default);
+        Assert.Equal("4", schema.Default.ToJson());
+    }
+
+    [Theory]
+    [InlineData(typeof(ComplexType), typeof(ComplexType))]
+    [InlineData(typeof(GenericType<int, string>), typeof(GenericType<int, string>))]
+    [InlineData(typeof(GenericType<,>), typeof(GenericType<int, int>))]
+    public void GenerateSchema_SupportsOption_CustomTypeMappings(
+        Type mappingType,
+        Type type)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.CustomTypeMappings.Add(mappingType, () => new OpenApiSchema { Type = JsonSchemaTypes.String })
+        );
+        var schema = subject.GenerateSchema(type, new SchemaRepository());
+
+        Assert.Equal(JsonSchemaTypes.String, schema.Type);
+        Assert.Null(schema.Properties);
+    }
+
+    [Fact]
+    public void GenerateSchema_SetsNullableFlag_IfMemberSchemaHasAllOf()
+    {
+        var subject = Subject(configureGenerator: c =>
         {
-            var schema = Subject().GenerateSchema(type, new SchemaRepository());
-
-            Assert.Equal("string", schema.Type);
-            Assert.Equal("binary", schema.Format);
-        }
-
-        [Theory]
-        [InlineData(typeof(bool), "boolean", null)]
-        [InlineData(typeof(byte), "integer", "int32")]
-        [InlineData(typeof(sbyte), "integer", "int32")]
-        [InlineData(typeof(short), "integer", "int32")]
-        [InlineData(typeof(ushort), "integer", "int32")]
-        [InlineData(typeof(int), "integer", "int32")]
-        [InlineData(typeof(uint), "integer", "int32")]
-        [InlineData(typeof(long), "integer", "int64")]
-        [InlineData(typeof(ulong), "integer", "int64")]
-        [InlineData(typeof(float), "number", "float")]
-        [InlineData(typeof(double), "number", "double")]
-        [InlineData(typeof(decimal), "number", "double")]
-        [InlineData(typeof(string), "string", null)]
-        [InlineData(typeof(char), "string", null)]
-        [InlineData(typeof(byte[]), "string", "byte")]
-        [InlineData(typeof(DateTime), "string", "date-time")]
-        [InlineData(typeof(DateTimeOffset), "string", "date-time")]
-        [InlineData(typeof(Guid), "string", "uuid")]
-        [InlineData(typeof(Uri), "string", "uri")]
-        [InlineData(typeof(bool?), "boolean", null)]
-        [InlineData(typeof(int?), "integer", "int32")]
-        [InlineData(typeof(DateTime?), "string", "date-time")]
-        [InlineData(typeof(Guid?), "string", "uuid")]
-        public void GenerateSchema_GeneratesPrimitiveSchema_IfPrimitiveOrNullablePrimitiveType(
-            Type type,
-            string expectedSchemaType,
-            string expectedFormat)
-        {
-            var schema = Subject().GenerateSchema(type, new SchemaRepository());
-
-            Assert.Equal(expectedSchemaType, schema.Type);
-            Assert.Equal(expectedFormat, schema.Format);
-        }
-
-        [Theory]
-        [InlineData(typeof(IntEnum), "integer", "int32", "2", "4", "8")]
-        [InlineData(typeof(LongEnum), "integer", "int64", "2", "4", "8")]
-        [InlineData(typeof(IntEnum?), "integer", "int32", "2", "4", "8")]
-        [InlineData(typeof(LongEnum?), "integer", "int64", "2", "4", "8")]
-        public void GenerateSchema_GeneratesReferencedEnumSchema_IfEnumOrNullableEnumType(
-            Type type,
-            string expectedSchemaType,
-            string expectedFormat,
-            params string[] expectedEnumAsJson)
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
-
-            Assert.NotNull(referenceSchema.Reference);
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal(expectedSchemaType, schema.Type);
-            Assert.Equal(expectedFormat, schema.Format);
-            Assert.NotNull(schema.Enum);
-            Assert.Equal(expectedEnumAsJson, schema.Enum.Select(openApiAny => openApiAny.ToJson()));
-        }
-
-        [Fact]
-        public void GenerateSchema_DedupsEnumValues_IfEnumTypeHasDuplicateValues()
-        {
-            var enumType = typeof(HttpStatusCode);
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(enumType, schemaRepository);
-
-            Assert.NotNull(referenceSchema.Reference);
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal(enumType.GetEnumValues().Cast<HttpStatusCode>().Distinct().Count(), schema.Enum.Count);
-        }
-
-        [Theory]
-        [InlineData(typeof(IDictionary<string, int>), "integer")]
-        [InlineData(typeof(IReadOnlyDictionary<string, bool>), "boolean")]
-        [InlineData(typeof(IDictionary), null)]
-        [InlineData(typeof(ExpandoObject), null)]
-        public void GenerateSchema_GeneratesDictionarySchema_IfDictionaryType(
-            Type type,
-            string expectedAdditionalPropertiesType)
-        {
-            var schema = Subject().GenerateSchema(type, new SchemaRepository());
-
-            Assert.Equal("object", schema.Type);
-            Assert.True(schema.AdditionalPropertiesAllowed);
-            Assert.NotNull(schema.AdditionalProperties);
-            Assert.Equal(expectedAdditionalPropertiesType, schema.AdditionalProperties.Type);
-        }
-
-        [Fact]
-        public void GenerateSchema_GeneratesReferencedDictionarySchema_IfDictionaryTypeIsSelfReferencing()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(DictionaryOfSelf), schemaRepository);
-
-            Assert.NotNull(referenceSchema.Reference);
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("object", schema.Type);
-            Assert.True(schema.AdditionalPropertiesAllowed);
-            Assert.NotNull(schema.AdditionalProperties);
-            Assert.Equal(schema.AdditionalProperties.Reference.Id, referenceSchema.Reference.Id); // ref to self
-        }
-
-        [Theory]
-        [InlineData(typeof(int[]), "integer", "int32")]
-        [InlineData(typeof(IEnumerable<string>), "string", null)]
-        [InlineData(typeof(DateTime?[]), "string", "date-time")]
-        [InlineData(typeof(int[][]), "array", null)]
-        [InlineData(typeof(IList), null, null)]
-        public void GenerateSchema_GeneratesArraySchema_IfEnumerableType(
-            Type type,
-            string expectedItemsType,
-            string expectedItemsFormat)
-        {
-            var schema = Subject().GenerateSchema(type, new SchemaRepository());
-
-            Assert.Equal("array", schema.Type);
-            Assert.NotNull(schema.Items);
-            Assert.Equal(expectedItemsType, schema.Items.Type);
-            Assert.Equal(expectedItemsFormat, schema.Items.Format);
-        }
-
-        [Theory]
-        [InlineData(typeof(ISet<string>))]
-        [InlineData(typeof(SortedSet<string>))]
-        [InlineData(typeof(KeyedCollectionOfComplexType))]
-        public void GenerateSchema_SetsUniqueItems_IfEnumerableTypeIsSetOrKeyedCollection(Type type)
-        {
-            var schema = Subject().GenerateSchema(type, new SchemaRepository());
-
-            Assert.Equal("array", schema.Type);
-            Assert.True(schema.UniqueItems);
-        }
-
-        [Fact]
-        public void GenerateSchema_GeneratesReferencedArraySchema_IfEnumerableTypeIsSelfReferencing()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(ListOfSelf), schemaRepository);
-
-            Assert.NotNull(referenceSchema.Reference);
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("array", schema.Type);
-            Assert.Equal(schema.Items.Reference.Id, referenceSchema.Reference.Id); // ref to self
-        }
-
-        [Theory]
-        [InlineData(typeof(ComplexType), "ComplexType", new[] { "Property1", "Property2" })]
-        [InlineData(typeof(GenericType<bool, int>), "BooleanInt32GenericType", new[] { "Property1", "Property2" })]
-        [InlineData(typeof(GenericType<bool, int[]>), "BooleanInt32ArrayGenericType", new[] { "Property1", "Property2" })]
-        [InlineData(typeof(ContainingType.NestedType), "NestedType", new[] { "Property2" })]
-        public void GenerateSchema_GeneratesReferencedObjectSchema_IfComplexType(
-            Type type,
-            string expectedSchemaId,
-            string[] expectedProperties)
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
-
-            Assert.NotNull(referenceSchema.Reference);
-            Assert.Equal(expectedSchemaId, referenceSchema.Reference.Id);
-            var schema = schemaRepository.Schemas[expectedSchemaId];
-            Assert.Equal("object", schema.Type);
-            Assert.Equal(expectedProperties, schema.Properties.Keys);
-            Assert.False(schema.AdditionalPropertiesAllowed);
-        }
-
-        [Fact]
-        public void GenerateSchema_IncludesInheritedProperties_IfComplexTypeIsDerived()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(SubType1), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("object", schema.Type);
-            Assert.Equal(new[] { "BaseProperty", "Property1" }, schema.Properties.Keys);
-        }
-
-        [Theory]
-        [InlineData(typeof(IBaseInterface), new[] { "BaseProperty" })]
-        [InlineData(typeof(ISubInterface1), new[] { "BaseProperty", "Property1" })]
-        [InlineData(typeof(ISubInterface2), new[] { "BaseProperty", "Property2" })]
-        [InlineData(typeof(IMultiSubInterface), new[] { "BaseProperty", "Property1", "Property2", "Property3" })]
-        public void GenerateSchema_IncludesInheritedProperties_IfTypeIsAnInterfaceHierarchy(
-            Type type,
-            string[] expectedPropertyNames)
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("object", schema.Type);
-            Assert.Equal(expectedPropertyNames.OrderBy(n => n), schema.Properties.Keys.OrderBy(k => k));
-        }
-
-        [Fact]
-        public void GenerateSchema_ExcludesIndexerProperties_IfComplexTypeIsIndexed()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(IndexedType), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("object", schema.Type);
-            Assert.Equal(new[] { "Property1" }, schema.Properties.Keys);
-        }
-
-        [Theory]
-        [InlineData(typeof(TypeWithNullableProperties), nameof(TypeWithNullableProperties.IntProperty), false)]
-        [InlineData(typeof(TypeWithNullableProperties), nameof(TypeWithNullableProperties.StringProperty), true)]
-        [InlineData(typeof(TypeWithNullableProperties), nameof(TypeWithNullableProperties.NullableIntProperty), true)]
-        public void GenerateSchema_SetsNullableFlag_IfPropertyIsReferenceOrNullableType(
-            Type declaringType,
-            string propertyName,
-            bool expectedNullable)
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(declaringType, schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal(expectedNullable, schema.Properties[propertyName].Nullable);
-        }
-
-        [Theory]
-        [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.BoolWithDefault), "true")]
-        [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.IntWithDefault), "2147483647")]
-        [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.LongWithDefault), "9223372036854775807")]
-        [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.FloatWithDefault), "3.4028235E+38")]
-        [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.DoubleWithDefault), "1.7976931348623157E+308")]
-        [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.StringWithDefault), "\"foobar\"")]
-        [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.IntArrayWithDefault), "[\n  1,\n  2,\n  3\n]")]
-        [InlineData(typeof(TypeWithDefaultAttributes), nameof(TypeWithDefaultAttributes.StringArrayWithDefault), "[\n  \"foo\",\n  \"bar\"\n]")]
-        [UseInvariantCulture]
-        public void GenerateSchema_SetsDefault_IfPropertyHasDefaultValueAttribute(
-            Type declaringType,
-            string propertyName,
-            string expectedDefaultAsJson)
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(declaringType, schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            var propertySchema = schema.Properties[propertyName];
-            Assert.NotNull(propertySchema.Default);
-            Assert.Equal(expectedDefaultAsJson, propertySchema.Default.ToJson());
-        }
-
-        [Fact]
-        public void GenerateSchema_SetsDeprecatedFlag_IfPropertyHasObsoleteAttribute()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(TypeWithObsoleteAttribute), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.True(schema.Properties["ObsoleteProperty"].Deprecated);
-        }
-
-        [Theory]
-        [InlineData(typeof(TypeWithValidationAttributes))]
-        [InlineData(typeof(TypeWithValidationAttributesViaMetadataType))]
-
-        public void GenerateSchema_SetsValidationProperties_IfComplexTypeHasValidationAttributes(Type type)
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("credit-card", schema.Properties["StringWithDataTypeCreditCard"].Format);
-            Assert.Equal(1, schema.Properties["StringWithMinMaxLength"].MinLength);
-            Assert.Equal(3, schema.Properties["StringWithMinMaxLength"].MaxLength);
-            Assert.Equal(1, schema.Properties["ArrayWithMinMaxLength"].MinItems);
-            Assert.Equal(3, schema.Properties["ArrayWithMinMaxLength"].MaxItems);
-            Assert.Equal(1, schema.Properties["IntWithRange"].Minimum);
-            Assert.Equal(10, schema.Properties["IntWithRange"].Maximum);
-            Assert.Equal("^[3-6]?\\d{12,15}$", schema.Properties["StringWithRegularExpression"].Pattern);
-            Assert.Equal(5, schema.Properties["StringWithStringLength"].MinLength);
-            Assert.Equal(10, schema.Properties["StringWithStringLength"].MaxLength);
-            Assert.Equal(1, schema.Properties["StringWithRequired"].MinLength);
-            Assert.False(schema.Properties["StringWithRequired"].Nullable);
-            Assert.False(schema.Properties["StringWithRequiredAllowEmptyTrue"].Nullable);
-            Assert.Null(schema.Properties["StringWithRequiredAllowEmptyTrue"].MinLength);
-            Assert.Equal(new[] { "StringWithRequired", "StringWithRequiredAllowEmptyTrue" }, schema.Required.ToArray());
-        }
-
-        [Fact]
-        public void GenerateSchema_SetsReadOnlyAndWriteOnlyFlags_IfPropertyIsRestricted()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(TypeWithRestrictedProperties), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.False(schema.Properties["ReadWriteProperty"].ReadOnly);
-            Assert.False(schema.Properties["ReadWriteProperty"].WriteOnly);
-            Assert.True(schema.Properties["ReadOnlyProperty"].ReadOnly);
-            Assert.False(schema.Properties["ReadOnlyProperty"].WriteOnly);
-            Assert.False(schema.Properties["WriteOnlyProperty"].ReadOnly);
-            Assert.True(schema.Properties["WriteOnlyProperty"].WriteOnly);
-        }
-
-        [Theory]
-        [InlineData(typeof(TypeWithParameterizedConstructor), nameof(TypeWithParameterizedConstructor.Id), false)]
-        [InlineData(typeof(TypeWithParameterlessAndParameterizedConstructor), nameof(TypeWithParameterlessAndParameterizedConstructor.Id), true)]
-        [InlineData(typeof(TypeWithParameterlessAndJsonAnnotatedConstructor), nameof(TypeWithParameterlessAndJsonAnnotatedConstructor.Id), false)]
-        public void GenerateSchema_DoesNotSetReadOnlyFlag_IfPropertyIsReadOnlyButCanBeSetViaConstructor(
-            Type type,
-            string propertyName,
-            bool expectedReadOnly
-        )
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(type, schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal(expectedReadOnly, schema.Properties[propertyName].ReadOnly);
-        }
-
-        [Fact]
-        public void GenerateSchema_SetsDefault_IfParameterHasDefaultValueAttribute()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var parameterInfo = typeof(FakeController)
-                .GetMethod(nameof(FakeController.ActionWithIntParameterWithDefaultValueAttribute))
-                .GetParameters()
-                .First();
-
-            var schema = Subject().GenerateSchema(parameterInfo.ParameterType, schemaRepository, parameterInfo: parameterInfo);
-
-            Assert.NotNull(schema.Default);
-            Assert.Equal("3", schema.Default.ToJson());
-        }
-
-        [Theory]
-        [InlineData(typeof(ComplexType), typeof(ComplexType), "string")]
-        [InlineData(typeof(GenericType<int, string>), typeof(GenericType<int, string>), "string")]
-        [InlineData(typeof(GenericType<,>), typeof(GenericType<int, int>), "string")]
-        public void GenerateSchema_SupportsOption_CustomTypeMappings(
-            Type mappingType,
-            Type type,
-            string expectedSchemaType)
-        {
-            var subject = Subject(
-                configureGenerator: c => c.CustomTypeMappings.Add(mappingType, () => new OpenApiSchema { Type = "string" })
-            );
-            var schema = subject.GenerateSchema(type, new SchemaRepository());
-
-            Assert.Equal(expectedSchemaType, schema.Type);
-            Assert.Empty(schema.Properties);
-        }
-
-        [Theory]
-        [InlineData(typeof(bool))]
-        [InlineData(typeof(IDictionary<string, string>))]
-        [InlineData(typeof(int[]))]
-        [InlineData(typeof(ComplexType))]
-        public void GenerateSchema_SupportsOption_SchemaFilters(Type type)
-        {
-            var subject = Subject(
-                configureGenerator: (c) => c.SchemaFilters.Add(new TestSchemaFilter())
-            );
-            var schemaRepository = new SchemaRepository("v1");
-
-            var schema = subject.GenerateSchema(type, schemaRepository);
-
-            var definitionSchema = schema.Reference == null ? schema : schemaRepository.Schemas[schema.Reference.Id];
-            Assert.Contains("X-foo", definitionSchema.Extensions.Keys);
-            Assert.Equal("v1", ((OpenApiString)definitionSchema.Extensions["X-docName"]).Value);
-        }
-
-        [Fact]
-        public void GenerateSchema_SupportsOption_IgnoreObsoleteProperties()
-        {
-            var subject = Subject(
-                configureGenerator: c => c.IgnoreObsoleteProperties = true
-            );
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = subject.GenerateSchema(typeof(TypeWithObsoleteAttribute), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.DoesNotContain("ObsoleteProperty", schema.Properties.Keys);
-        }
-
-        [Fact]
-        public void GenerateSchema_SupportsOption_SchemaIdSelector()
-        {
-            var subject = Subject(
-                configureGenerator: c => c.SchemaIdSelector = (type) => type.FullName
-            );
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = subject.GenerateSchema(typeof(ComplexType), schemaRepository);
-
-            Assert.Equal("Swashbuckle.AspNetCore.TestSupport.ComplexType", referenceSchema.Reference.Id);
-            Assert.Contains(referenceSchema.Reference.Id, schemaRepository.Schemas.Keys);
-        }
-
-        [Fact]
-        public void GenerateSchema_SupportsOption_UseAllOfForInheritance()
-        {
-            var subject = Subject(
-                configureGenerator: c => c.UseAllOfForInheritance = true
-            );
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = subject.GenerateSchema(typeof(SubType1), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("object", schema.Type);
-            Assert.Equal(new[] { "Property1" }, schema.Properties.Keys);
-            Assert.NotNull(schema.AllOf);
-            Assert.Equal(1, schema.AllOf.Count);
-            Assert.NotNull(schema.AllOf[0].Reference);
-            Assert.Equal("BaseType", schema.AllOf[0].Reference.Id);
-            // The base type schema
-            var baseTypeSchema = schemaRepository.Schemas[schema.AllOf[0].Reference.Id];
-            Assert.Equal("object", baseTypeSchema.Type);
-            Assert.Equal(new[] { "BaseProperty" }, baseTypeSchema.Properties.Keys);
-        }
-
-        [Fact]
-        public void GenerateSchema_SupportsOption_SubTypesSelector()
-        {
-            var subject = Subject(configureGenerator: c =>
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomAllOfType), () => new OpenApiSchema
             {
-                c.UseAllOfForInheritance = true;
-                c.SubTypesSelector = (type) => new[] { typeof(SubType1) };
+                AllOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String }
+                ]
             });
-            var schemaRepository = new SchemaRepository();
+        });
+        var schemaRepository = new SchemaRepository();
 
-            var schema = subject.GenerateSchema(typeof(BaseType), schemaRepository);
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNullableCustomAllOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNullableCustomAllOfProperty.Property)]);
 
-            Assert.Equal(new[] { "SubType1", "BaseType" }, schemaRepository.Schemas.Keys);
-        }
+        // The allOf composition is preserved as-is: restructuring it into an anyOf would
+        // stop client generators resolving the $ref once serialized as OpenAPI 3.0.
+        Assert.Null(propertySchema.AnyOf);
+        Assert.NotNull(propertySchema.AllOf);
+        Assert.Single(propertySchema.AllOf);
+        Assert.True(propertySchema.Type.HasValue);
+        Assert.True(propertySchema.Type.Value.HasFlag(JsonSchemaType.Null));
+    }
 
-        [Fact]
-        public void GenerateSchema_SupportsOption_DiscriminatorNameSelector()
+    [Fact]
+    public void GenerateSchema_SetsNullableFlag_IfMemberSchemaHasAnyOf()
+    {
+        var subject = Subject(configureGenerator: c =>
         {
-            var subject = Subject(configureGenerator: c =>
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomAnyOfType), () => new OpenApiSchema
             {
-                c.UseAllOfForInheritance = true;
-                c.DiscriminatorNameSelector = (baseType) => "TypeName";
-                c.DiscriminatorValueSelector = (subType) => subType.Name;
+                AnyOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String }
+                ]
             });
+        });
+        var schemaRepository = new SchemaRepository();
 
-            var schemaRepository = new SchemaRepository();
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNullableCustomAnyOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNullableCustomAnyOfProperty.Property)]);
 
-            var referenceSchema = subject.GenerateSchema(typeof(BaseType), schemaRepository);
+        Assert.Null(propertySchema.Type);
+        Assert.NotNull(propertySchema.AnyOf);
+        Assert.Equal(2, propertySchema.AnyOf.Count);
+        Assert.Contains(propertySchema.AnyOf, s => s.Type == JsonSchemaType.Null);
+    }
 
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Contains("TypeName", schema.Properties.Keys);
-            Assert.Contains("TypeName", schema.Required);
-            Assert.NotNull(schema.Discriminator);
-            Assert.Equal("TypeName", schema.Discriminator.PropertyName);
-        }
-
-        [Fact]
-        public void GenerateSchema_SupportsOption_UseAllOfForPolymorphism()
+    [Fact]
+    public void GenerateSchema_SetsNullableFlag_IfMemberSchemaHasOneOf()
+    {
+        var subject = Subject(configureGenerator: c =>
         {
-            var subject = Subject(configureGenerator: c =>
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomOneOfType), () => new OpenApiSchema
             {
-                c.UseOneOfForPolymorphism = true;
+                OneOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String }
+                ]
             });
-            var schemaRepository = new SchemaRepository();
+        });
+        var schemaRepository = new SchemaRepository();
 
-            var schema = subject.GenerateSchema(typeof(BaseType), schemaRepository);
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNullableCustomOneOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNullableCustomOneOfProperty.Property)]);
 
-            // The polymorphic schema
-            Assert.NotNull(schema.OneOf);
-            Assert.Equal(3, schema.OneOf.Count);
-            // The base type schema
-            Assert.NotNull(schema.OneOf[0].Reference);
-            var baseSchema = schemaRepository.Schemas[schema.OneOf[0].Reference.Id];
-            Assert.Equal("object", baseSchema.Type);
-            Assert.Equal(new[] { "BaseProperty" }, baseSchema.Properties.Keys);
-            // The first sub type schema
-            Assert.NotNull(schema.OneOf[1].Reference);
-            var subType1Schema = schemaRepository.Schemas[schema.OneOf[1].Reference.Id];
-            Assert.Equal("object", subType1Schema.Type);
-            Assert.NotNull(subType1Schema.AllOf);
-            Assert.Equal(1, subType1Schema.AllOf.Count);
-            Assert.NotNull(subType1Schema.AllOf[0].Reference);
-            Assert.Equal("BaseType", subType1Schema.AllOf[0].Reference.Id);
-            Assert.Equal(new[] { "Property1" }, subType1Schema.Properties.Keys);
-            // The second sub type schema
-            Assert.NotNull(schema.OneOf[2].Reference);
-            var subType2Schema = schemaRepository.Schemas[schema.OneOf[2].Reference.Id];
-            Assert.Equal("object", subType2Schema.Type);
-            Assert.NotNull(subType2Schema.AllOf);
-            Assert.Equal(1, subType2Schema.AllOf.Count);
-            Assert.NotNull(subType2Schema.AllOf[0].Reference);
-            Assert.Equal("BaseType", subType2Schema.AllOf[0].Reference.Id);
-            Assert.Equal(new[] { "Property2" }, subType2Schema.Properties.Keys);
-        }
+        Assert.Null(propertySchema.Type);
+        Assert.NotNull(propertySchema.OneOf);
+        Assert.Equal(2, propertySchema.OneOf.Count);
+        Assert.Contains(propertySchema.OneOf, s => s.Type == JsonSchemaType.Null);
+    }
 
-        [Fact]
-        public void GenerateSchema_SupportsOption_UseAllOfToExtendReferenceSchemas()
+    [Fact]
+    public void GenerateSchema_DoesNotAddDuplicateNullType_IfMemberSchemaAnyOfAlreadyAllowsNull()
+    {
+        var subject = Subject(configureGenerator: c =>
         {
-            var subject = Subject(
-                configureGenerator: c => c.UseAllOfToExtendReferenceSchemas = true
-            );
-            var propertyInfo = typeof(SelfReferencingType).GetProperty(nameof(SelfReferencingType.Another));
-
-            var schema = subject.GenerateSchema(propertyInfo.PropertyType, new SchemaRepository(), memberInfo: propertyInfo);
-
-            Assert.Null(schema.Reference);
-            Assert.NotNull(schema.AllOf);
-            Assert.Equal(1, schema.AllOf.Count);
-        }
-
-        [Fact]
-        public void GenerateSchema_SupportsOption_UseInlineDefinitionsForEnums()
-        {
-            var subject = Subject(
-                configureGenerator: c => c.UseInlineDefinitionsForEnums = true
-            );
-
-            var schema = subject.GenerateSchema(typeof(IntEnum), new SchemaRepository());
-
-            Assert.Equal("integer", schema.Type);
-            Assert.NotNull(schema.Enum);
-        }
-
-        [Theory]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NullableInt), true)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NonNullableInt), false)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NullableString), true)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NonNullableString), false)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NullableArray), true)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NonNullableArray), false)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NullableList), true)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NonNullableList), false)]
-        public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes(
-            Type declaringType,
-            string propertyName,
-            bool expectedNullable)
-        {
-            var subject = Subject(
-                configureGenerator: c => c.SupportNonNullableReferenceTypes = true
-            );
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = subject.GenerateSchema(declaringType, schemaRepository);
-
-            var propertySchema = schemaRepository.Schemas[referenceSchema.Reference.Id].Properties[propertyName];
-            Assert.Equal(expectedNullable, propertySchema.Nullable);
-        }
-
-        [Theory]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NullableDictionaryWithNonNullableContent), true, false)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NonNullableDictionaryWithNonNullableContent), false, false)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NonNullableDictionaryWithNullableContent), false, true)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.NullableDictionaryWithNullableContent), true, true)]
-        public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes_NullableAttribute_Compiler_Optimizations_Situations(
-            Type declaringType,
-            string propertyName,
-            bool expectedNullableProperty,
-            bool expectedNullableContent)
-        {
-            var subject = Subject(
-                configureGenerator: c => c.SupportNonNullableReferenceTypes = true
-            );
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = subject.GenerateSchema(declaringType, schemaRepository);
-
-            var propertySchema = schemaRepository.Schemas[referenceSchema.Reference.Id].Properties[propertyName];
-            var contentSchema = schemaRepository.Schemas[referenceSchema.Reference.Id].Properties[propertyName].AdditionalProperties;
-            Assert.Equal(expectedNullableProperty, propertySchema.Nullable);
-            Assert.Equal(expectedNullableContent, contentSchema.Nullable);
-        }
-
-        [Theory]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.SubTypeWithOneNullableContent), nameof(TypeWithNullableContext.NullableString), true)]
-        [InlineData(typeof(TypeWithNullableContext), nameof(TypeWithNullableContext.SubTypeWithOneNonNullableContent), nameof(TypeWithNullableContext.NonNullableString), false)]
-        public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypesInDictionary_NullableAttribute_Compiler_Optimizations_Situations(
-            Type declaringType,
-            string subType,
-            string propertyName,
-            bool expectedNullable)
-        {
-            var subject = Subject(
-                configureGenerator: c => c.SupportNonNullableReferenceTypes = true
-            );
-            var schemaRepository = new SchemaRepository();
-
-            subject.GenerateSchema(declaringType, schemaRepository);
-
-            var propertySchema = schemaRepository.Schemas[subType].Properties[propertyName];
-            Assert.Equal(expectedNullable, propertySchema.Nullable);
-        }
-
-        [Fact]
-        public void GenerateSchema_HandlesTypesWithNestedTypes()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(ContainingType), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("object", schema.Type);
-            Assert.Equal("NestedType", schema.Properties["Property1"].Reference.Id);
-        }
-
-        [Fact]
-        public void GenerateSchema_HandlesRecursion_IfCalledAgainWithinAFilter()
-        {
-            var subject = Subject(
-                configureGenerator: c => c.SchemaFilters.Add(new RecursiveCallSchemaFilter())
-            );
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = subject.GenerateSchema(typeof(ComplexType), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("ComplexType", schema.Properties["Self"].Reference.Id);
-        }
-
-        [Fact]
-        public void GenerateSchema_Errors_IfTypesHaveConflictingSchemaIds()
-        {
-            var subject = Subject();
-            var schemaRepository = new SchemaRepository();
-
-            subject.GenerateSchema(typeof(TestSupport.Namespace1.ConflictingType), schemaRepository);
-            Assert.Throws<InvalidOperationException>(() =>
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomAnyOfType), () => new OpenApiSchema
             {
-                subject.GenerateSchema(typeof(TestSupport.Namespace2.ConflictingType), schemaRepository);
+                AnyOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String },
+                    new OpenApiSchema { Type = JsonSchemaType.Null },
+                ]
             });
-        }
+        });
+        var schemaRepository = new SchemaRepository();
 
-        [Fact]
-        public void GenerateSchema_HonorsSerializerOption_IgnoreReadonlyProperties()
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNullableCustomAnyOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNullableCustomAnyOfProperty.Property)]);
+
+        Assert.NotNull(propertySchema.AnyOf);
+        Assert.Equal(2, propertySchema.AnyOf.Count);
+        Assert.Single(propertySchema.AnyOf, s => s.Type == JsonSchemaType.Null);
+    }
+
+    [Fact]
+    public void GenerateSchema_DoesNotAddDuplicateNullType_IfMemberSchemaOneOfAlreadyAllowsNull()
+    {
+        var subject = Subject(configureGenerator: c =>
         {
-            var subject = Subject(
-                configureGenerator: c => { },
-                configureSerializer: c => { c.IgnoreReadOnlyProperties = true; }
-            );
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = subject.GenerateSchema(typeof(ComplexType), schemaRepository);
-
-            Assert.NotNull(referenceSchema.Reference);
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-        }
-
-        [Fact]
-        public void GenerateSchema_HonorsSerializerOption_PropertyNamingPolicy()
-        {
-            var subject = Subject(
-                configureGenerator: c => { },
-                configureSerializer: c => { c.PropertyNamingPolicy = JsonNamingPolicy.CamelCase; }
-            );
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = subject.GenerateSchema(typeof(ComplexType), schemaRepository);
-
-            Assert.NotNull(referenceSchema.Reference);
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal(new[] { "property1", "property2" }, schema.Properties.Keys);
-        }
-
-        [Theory]
-        [InlineData(false, new[] { "\"Value2\"", "\"Value4\"", "\"Value8\"" }, "\"Value4\"")]
-        [InlineData(true, new[] { "\"value2\"", "\"value4\"", "\"value8\"" }, "\"value4\"")]
-        public void GenerateSchema_HonorsSerializerOption_StringEnumConverter(
-            bool camelCaseText,
-            string[] expectedEnumAsJson,
-            string expectedDefaultAsJson)
-        {
-            var subject = Subject(
-                configureGenerator: c => { c.UseInlineDefinitionsForEnums = true; },
-                configureSerializer: c => { c.Converters.Add(new JsonStringEnumConverter(namingPolicy: (camelCaseText ? JsonNamingPolicy.CamelCase : null), true)); }
-            );
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = subject.GenerateSchema(typeof(TypeWithDefaultAttributeOnEnum), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            var propertySchema = schema.Properties[nameof(TypeWithDefaultAttributeOnEnum.EnumWithDefault)];
-            Assert.Equal("string", propertySchema.Type);
-            Assert.Equal(expectedEnumAsJson, propertySchema.Enum.Select(openApiAny => openApiAny.ToJson()));
-            Assert.Equal(expectedDefaultAsJson, propertySchema.Default.ToJson());
-        }
-
-        [Fact]
-        public void GenerateSchema_HonorsSerializerAttribute_StringEnumConverter()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(JsonConverterAnnotatedEnum), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal("string", schema.Type);
-            Assert.Equal(new[] { "\"Value1\"", "\"Value2\"", "\"X\"" }, schema.Enum.Select(openApiAny => openApiAny.ToJson()));
-        }
-
-        [Fact]
-        public void GenerateSchema_HonorsSerializerAttributes_JsonIgnore()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(JsonIgnoreAnnotatedType), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-
-            string[] expectedKeys =
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomOneOfType), () => new OpenApiSchema
             {
-                nameof(JsonIgnoreAnnotatedType.StringWithJsonIgnoreConditionNever),
-                nameof(JsonIgnoreAnnotatedType.StringWithJsonIgnoreConditionWhenWritingDefault),
-                nameof(JsonIgnoreAnnotatedType.StringWithJsonIgnoreConditionWhenWritingNull),
-                nameof(JsonIgnoreAnnotatedType.StringWithNoAnnotation)
-            };
+                OneOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String },
+                    new OpenApiSchema { Type = JsonSchemaType.Null },
+                ]
+            });
+        });
+        var schemaRepository = new SchemaRepository();
 
-            Assert.Equal(expectedKeys, schema.Properties.Keys.ToArray());
-        }
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNullableCustomOneOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNullableCustomOneOfProperty.Property)]);
 
-        [Fact]
-        public void GenerateSchema_HonorsSerializerAttribute_JsonPropertyName()
+        Assert.NotNull(propertySchema.OneOf);
+        Assert.Equal(2, propertySchema.OneOf.Count);
+        Assert.Single(propertySchema.OneOf, s => s.Type == JsonSchemaType.Null);
+    }
+
+    [Fact]
+    public void GenerateSchema_RemovesNullType_IfNonNullableMemberSchemaHasAnyOf()
+    {
+        var subject = Subject(configureGenerator: c =>
         {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(JsonPropertyNameAnnotatedType), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.Equal(new[] { "string-with-json-property-name" }, schema.Properties.Keys.ToArray());
-        }
-
-        [Fact]
-        public void GenerateSchema_HonorsSerializerAttribute_JsonExtensionData()
-        {
-            var schemaRepository = new SchemaRepository();
-
-            var referenceSchema = Subject().GenerateSchema(typeof(JsonExtensionDataAnnotatedType), schemaRepository);
-
-            var schema = schemaRepository.Schemas[referenceSchema.Reference.Id];
-            Assert.True(schema.AdditionalPropertiesAllowed);
-            Assert.NotNull(schema.AdditionalProperties);
-            Assert.Null(schema.AdditionalProperties.Type);
-        }
-
-        [Theory]
-        [InlineData(typeof(object))]
-        [InlineData(typeof(JsonDocument))]
-        [InlineData(typeof(JsonElement))]
-        public void GenerateSchema_GeneratesOpenSchema_IfDynamicJsonType(Type type)
-        {
-            var schema = Subject().GenerateSchema(type, new SchemaRepository());
-
-            Assert.Null(schema.Reference);
-            Assert.Null(schema.Type);
-        }
-
-        [Fact]
-        public void GenerateSchema_GeneratesSchema_IfParameterHasMaxLengthRouteConstraint()
-        {
-            var maxLength = 3;
-            var constraints = new List<IRouteConstraint>()
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomAnyOfType), () => new OpenApiSchema
             {
-                new MaxLengthRouteConstraint(maxLength)
-            };
-            var routeInfo = new ApiParameterRouteInfo
-            {
-                Constraints = constraints
-            };
-            var parameterInfo = typeof(FakeController)
-                .GetMethod(nameof(FakeController.ActionWithParameter))
-                .GetParameters()
-                .First();
-            var schema = Subject().GenerateSchema(typeof(string), new SchemaRepository(), parameterInfo: parameterInfo, routeInfo: routeInfo);
-            Assert.Equal(maxLength, schema.MaxLength);
-        }
+                AnyOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String },
+                    new OpenApiSchema { Type = JsonSchemaType.Null },
+                ]
+            });
+        });
+        var schemaRepository = new SchemaRepository();
 
-        [Fact]
-        public void GenerateSchema_GeneratesSchema_IfParameterHasMultipleConstraints()
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNonNullableCustomAnyOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNonNullableCustomAnyOfProperty.Property)]);
+
+        // The mirror image of GenerateSchema_SetsNullableFlag_IfMemberSchemaHasAnyOf: nullability
+        // is expressed as a member of the composition, so that is where it is removed from.
+        Assert.NotNull(propertySchema.AnyOf);
+        Assert.Single(propertySchema.AnyOf);
+        Assert.DoesNotContain(propertySchema.AnyOf, s => s.Type == JsonSchemaType.Null);
+    }
+
+    [Fact]
+    public void GenerateSchema_RemovesNullType_IfNonNullableMemberSchemaHasOneOf()
+    {
+        var subject = Subject(configureGenerator: c =>
         {
-            var maxLength = 3;
-            var minLength = 1;
-            var constraints = new List<IRouteConstraint>()
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomOneOfType), () => new OpenApiSchema
             {
-                new MaxLengthRouteConstraint(3),
-                new MinLengthRouteConstraint(minLength)
-            };
-            var routeInfo = new ApiParameterRouteInfo
-            {
-                Constraints = constraints
-            };
-            var parameterInfo = typeof(FakeController)
-                .GetMethod(nameof(FakeController.ActionWithParameter))
-                .GetParameters()
-                .First();
-            var schema = Subject().GenerateSchema(typeof(string), new SchemaRepository(), parameterInfo: parameterInfo, routeInfo: routeInfo);
-            Assert.Equal(maxLength, schema.MaxLength);
-            Assert.Equal(minLength, schema.MinLength);
-        }
+                OneOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String },
+                    new OpenApiSchema { Type = JsonSchemaType.Null },
+                ]
+            });
+        });
+        var schemaRepository = new SchemaRepository();
 
-        [Fact]
-        public void GenerateSchema_GeneratesSchema_IfParameterHasTypeConstraints()
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNonNullableCustomOneOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNonNullableCustomOneOfProperty.Property)]);
+
+        Assert.NotNull(propertySchema.OneOf);
+        Assert.Single(propertySchema.OneOf);
+        Assert.DoesNotContain(propertySchema.OneOf, s => s.Type == JsonSchemaType.Null);
+    }
+
+    [Fact]
+    public void GenerateSchema_ClearsNullType_IfNonNullableMemberSchemaAnyOfMemberAllowsOtherTypes()
+    {
+        var subject = Subject(configureGenerator: c =>
         {
-            var constraints = new List<IRouteConstraint>()
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomAnyOfType), () => new OpenApiSchema
             {
-                new IntRouteConstraint(),
-            };
-            var routeInfo = new ApiParameterRouteInfo
-            {
-                Constraints = constraints
-            };
-            var parameterInfo = typeof(FakeController)
-                .GetMethod(nameof(FakeController.ActionWithParameter))
-                .GetParameters()
-                .First();
-            var schema = Subject().GenerateSchema(typeof(string), new SchemaRepository(), parameterInfo: parameterInfo, routeInfo: routeInfo);
-            Assert.Equal("integer", schema.Type);
-        }
+                AnyOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String | JsonSchemaType.Null },
+                ]
+            });
+        });
+        var schemaRepository = new SchemaRepository();
 
-        private SchemaGenerator Subject(
-            Action<SchemaGeneratorOptions> configureGenerator = null,
-            Action<JsonSerializerOptions> configureSerializer = null)
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNonNullableCustomAnyOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNonNullableCustomAnyOfProperty.Property)]);
+
+        // The member is not removed, as that would discard the other types it permits.
+        Assert.NotNull(propertySchema.AnyOf);
+        Assert.Single(propertySchema.AnyOf);
+        Assert.Equal(JsonSchemaTypes.String, propertySchema.AnyOf[0].Type);
+    }
+
+    [Fact]
+    public void GenerateSchema_PreservesLoneNullType_IfNonNullableMemberSchemaAnyOfOnlyAllowsNull()
+    {
+        var subject = Subject(configureGenerator: c =>
         {
-            var generatorOptions = new SchemaGeneratorOptions();
-            configureGenerator?.Invoke(generatorOptions);
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomAnyOfType), () => new OpenApiSchema
+            {
+                AnyOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaType.Null },
+                ]
+            });
+        });
+        var schemaRepository = new SchemaRepository();
 
-            var serializerOptions = new JsonSerializerOptions();
-            configureSerializer?.Invoke(serializerOptions);
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNonNullableCustomAnyOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNonNullableCustomAnyOfProperty.Property)]);
 
-            return new SchemaGenerator(generatorOptions, new JsonSerializerDataContractResolver(serializerOptions));
+        // Removing the only member would emit an empty anyOf, which is not valid.
+        Assert.NotNull(propertySchema.AnyOf);
+        Assert.Single(propertySchema.AnyOf);
+        Assert.Equal(JsonSchemaType.Null, propertySchema.AnyOf[0].Type);
+    }
+
+    [Fact]
+    public void GenerateSchema_RemovesNullTypeFromType_IfNonNullableMemberSchemaHasAllOf()
+    {
+        var subject = Subject(configureGenerator: c =>
+        {
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomAllOfType), () => new OpenApiSchema
+            {
+                Type = JsonSchemaTypes.String | JsonSchemaType.Null,
+                AllOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String }
+                ]
+            });
+        });
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNonNullableCustomAllOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNonNullableCustomAllOfProperty.Property)]);
+
+        // An allOf records its nullability on "type", so that is where it is removed from.
+        Assert.NotNull(propertySchema.AllOf);
+        Assert.Single(propertySchema.AllOf);
+        Assert.Equal(JsonSchemaTypes.String, propertySchema.Type);
+    }
+
+    // See https://github.com/domaindrivendev/Swashbuckle.AspNetCore/issues/3936
+    [Fact]
+    public void GenerateSchema_DoesNotRestrictTypeToNull_IfDictionaryValueIsNullableObject()
+    {
+        var contentSchema = GenerateNullableObjectDictionaryContentSchema();
+
+        // A schema with no "type" already validates every JSON type, including null,
+        // so no type should be emitted. Before #3936 this was "null" alone, which
+        // restricted the value to null only.
+        Assert.Null(contentSchema.Type);
+    }
+
+    [Fact]
+    public void GenerateSchema_SerializesNullableObjectDictionaryValue_WithoutType_ForOpenApi3_1()
+    {
+        var contentSchema = GenerateNullableObjectDictionaryContentSchema();
+
+        var serialized = SerializeSchemaInDocument(contentSchema, OpenApiSpecVersion.OpenApi3_1);
+
+        using var json = JsonDocument.Parse(serialized);
+        var schema = json.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("Test");
+        Assert.False(schema.TryGetProperty("type", out _));
+    }
+
+    [Fact]
+    public void GenerateSchema_SerializesNullableObjectDictionaryValue_WithoutType_ForOpenApi3_0()
+    {
+        var contentSchema = GenerateNullableObjectDictionaryContentSchema();
+
+        var serialized = SerializeSchemaInDocument(contentSchema, OpenApiSpecVersion.OpenApi3_0);
+
+        using var json = JsonDocument.Parse(serialized);
+        var schema = json.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("Test");
+        Assert.False(schema.TryGetProperty("type", out _));
+        Assert.False(schema.TryGetProperty("nullable", out _));
+    }
+
+    [Fact]
+    public void GenerateSchema_SerializesNullableObjectDictionaryValue_WithoutType_ForSwagger2_0()
+    {
+        var contentSchema = GenerateNullableObjectDictionaryContentSchema();
+
+        var serialized = SerializeSchemaInDocument(contentSchema, OpenApiSpecVersion.OpenApi2_0);
+
+        using var json = JsonDocument.Parse(serialized);
+        Assert.Equal("2.0", json.RootElement.GetProperty("swagger").GetString());
+        var schema = json.RootElement.GetProperty("definitions").GetProperty("Test");
+        Assert.False(schema.TryGetProperty("type", out _));
+    }
+
+    [Fact]
+    public void GenerateSchema_SerializesNullableAllOfSchema_AsAllOfWithNullType_ForOpenApi3_1()
+    {
+        var propertySchema = GenerateNullableAllOfPropertySchema();
+
+        var serialized = SerializeSchemaInDocument(propertySchema, OpenApiSpecVersion.OpenApi3_1);
+
+        using var json = JsonDocument.Parse(serialized);
+        var schema = json.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("Test");
+        Assert.True(schema.TryGetProperty("allOf", out var allOf));
+        Assert.Equal(1, allOf.GetArrayLength());
+        Assert.True(schema.TryGetProperty("type", out var type));
+        Assert.Equal("null", type.GetString());
+    }
+
+    // The allOf must survive down-conversion unwrapped, otherwise client generators cannot
+    // resolve the referenced schema and degrade the property to an untyped value.
+    [Fact]
+    public void GenerateSchema_SerializesNullableAllOfSchema_AsNullableAllOf_ForOpenApi3_0()
+    {
+        var propertySchema = GenerateNullableAllOfPropertySchema();
+
+        var serialized = SerializeSchemaInDocument(propertySchema, OpenApiSpecVersion.OpenApi3_0);
+
+        using var json = JsonDocument.Parse(serialized);
+        var schema = json.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("Test");
+        Assert.True(schema.TryGetProperty("nullable", out var nullable));
+        Assert.True(nullable.GetBoolean());
+        Assert.True(schema.TryGetProperty("allOf", out var allOf));
+        Assert.Equal(1, allOf.GetArrayLength());
+        Assert.False(schema.TryGetProperty("anyOf", out _));
+    }
+
+    [Fact]
+    public void GenerateSchema_SerializesNullableAllOfSchema_AsAllOf_ForSwagger2_0()
+    {
+        var propertySchema = GenerateNullableAllOfPropertySchema();
+
+        var serialized = SerializeSchemaInDocument(propertySchema, OpenApiSpecVersion.OpenApi2_0);
+
+        using var json = JsonDocument.Parse(serialized);
+        Assert.Equal("2.0", json.RootElement.GetProperty("swagger").GetString());
+        var schema = json.RootElement.GetProperty("definitions").GetProperty("Test");
+        Assert.True(schema.TryGetProperty("allOf", out var allOf));
+        Assert.Equal(1, allOf.GetArrayLength());
+        Assert.False(schema.TryGetProperty("anyOf", out _));
+    }
+
+    [Theory]
+    [InlineData(typeof(bool))]
+    [InlineData(typeof(IDictionary<string, string>))]
+    [InlineData(typeof(int[]))]
+    [InlineData(typeof(ComplexType))]
+    public void GenerateSchema_SupportsOption_SchemaFilters(Type type)
+    {
+        var subject = Subject(
+            configureGenerator: (c) => c.SchemaFilters.Add(new TestSchemaFilter())
+        );
+        var schemaRepository = new SchemaRepository("v1");
+
+        var schema = subject.GenerateSchema(type, schemaRepository);
+
+        if (schema is OpenApiSchemaReference reference)
+        {
+            schema = schemaRepository.Schemas[reference.Reference.Id];
         }
+
+        Assert.Contains("X-foo", schema.Extensions.Keys);
+
+        Assert.Equal("v1", ((JsonNodeExtension)schema.Extensions["X-docName"]).Node.GetValue<string>());
+    }
+
+    [Fact]
+    public void GenerateSchema_SupportsOption_IgnoreObsoleteProperties()
+    {
+        var subject = Subject(
+            configureGenerator: c => c.IgnoreObsoleteProperties = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(typeof(TypeWithObsoleteAttribute), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.DoesNotContain("ObsoleteProperty", schema.Properties.Keys);
+    }
+
+    [Fact]
+    public void GenerateSchema_SupportsOption_SchemaIdSelector()
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SchemaIdSelector = (type) => type.FullName
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(typeof(ComplexType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        Assert.Equal("Swashbuckle.AspNetCore.TestSupport.ComplexType", reference.Reference.Id);
+        Assert.Contains(reference.Reference.Id, schemaRepository.Schemas.Keys);
+    }
+
+    [Fact]
+    public void GenerateSchema_SupportsOption_UseAllOfForInheritance()
+    {
+        var subject = Subject(
+            configureGenerator: c => c.UseAllOfForInheritance = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(typeof(SubType1), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.NotNull(schema.AllOf);
+        Assert.Equal(2, schema.AllOf.Count);
+        var baseSchema = schema.AllOf[0];
+        reference = Assert.IsType<OpenApiSchemaReference>(baseSchema);
+        Assert.Equal("BaseType", reference.Reference.Id);
+        var subSchema = schema.AllOf[1];
+        Assert.Equal(["Property1"], subSchema.Properties.Keys);
+        // The base type schema
+        var baseTypeSchema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Object, baseTypeSchema.Type);
+        Assert.Equal(["BaseProperty"], baseTypeSchema.Properties.Keys);
+    }
+
+    [Fact]
+    public void GenerateSchema_SupportsOption_SubTypesSelector()
+    {
+        var subject = Subject(configureGenerator: c =>
+        {
+            c.UseAllOfForInheritance = true;
+            c.SubTypesSelector = (type) => [typeof(SubType1)];
+        });
+        var schemaRepository = new SchemaRepository();
+
+        var schema = subject.GenerateSchema(typeof(BaseType), schemaRepository);
+
+        Assert.Equal(["SubType1", "BaseType"], schemaRepository.Schemas.Keys);
+
+        var subSchema = schemaRepository.Schemas["SubType1"];
+        Assert.NotNull(subSchema.AllOf);
+        Assert.Equal(2, subSchema.AllOf.Count);
+    }
+
+    [Fact]
+    public void GenerateSchema_SecondLevelInheritance_SubTypesSelector()
+    {
+        var subject = Subject(configureGenerator: c =>
+        {
+            c.UseAllOfForInheritance = true;
+            c.SubTypesSelector = (type) => type == typeof(BaseSecondLevelType) ? [typeof(SubSubSecondLevelType)] : Array.Empty<Type>();
+        });
+        var schemaRepository = new SchemaRepository();
+
+        var schema = subject.GenerateSchema(typeof(BaseSecondLevelType), schemaRepository);
+
+        Assert.Equal(["SubSubSecondLevelType", "BaseSecondLevelType"], schemaRepository.Schemas.Keys);
+
+        var subSchema = schemaRepository.Schemas["SubSubSecondLevelType"];
+        Assert.NotNull(subSchema.AllOf);
+        Assert.Equal(2, subSchema.AllOf.Count);
+    }
+
+    [Fact]
+    public void GenerateSchema_SupportsOption_DiscriminatorNameSelector()
+    {
+        var subject = Subject(configureGenerator: c =>
+        {
+            c.UseAllOfForInheritance = true;
+            c.DiscriminatorNameSelector = (baseType) => "TypeName";
+            c.DiscriminatorValueSelector = (subType) => subType.Name;
+        });
+
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(typeof(BaseType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Contains("TypeName", schema.Properties.Keys);
+        Assert.Contains("TypeName", schema.Required);
+        Assert.NotNull(schema.Discriminator);
+        Assert.Equal("TypeName", schema.Discriminator.PropertyName);
+    }
+
+    [Fact]
+    public void GenerateSchema_SupportsOption_UseAllOfForPolymorphism()
+    {
+        var subject = Subject(configureGenerator: c =>
+        {
+            c.UseOneOfForPolymorphism = true;
+        });
+        var schemaRepository = new SchemaRepository();
+
+        var schema = subject.GenerateSchema(typeof(BaseType), schemaRepository);
+
+        // The polymorphic schema
+        Assert.NotNull(schema.OneOf);
+        Assert.Equal(3, schema.OneOf.Count);
+
+        // The base type schema
+        var reference = Assert.IsType<OpenApiSchemaReference>(schema.OneOf[0]);
+        var baseSchema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Object, baseSchema.Type);
+        Assert.Equal(["BaseProperty"], baseSchema.Properties.Keys);
+
+        // The first sub type schema
+        reference = Assert.IsType<OpenApiSchemaReference>(schema.OneOf[1]);
+        var subType1Schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Object, subType1Schema.Type);
+        Assert.NotNull(subType1Schema.AllOf);
+        var allOf = Assert.Single(subType1Schema.AllOf);
+        reference = Assert.IsType<OpenApiSchemaReference>(allOf);
+        Assert.Equal("BaseType", reference.Reference.Id);
+        Assert.Equal(["Property1"], subType1Schema.Properties.Keys);
+
+        // The second sub type schema
+        reference = Assert.IsType<OpenApiSchemaReference>(schema.OneOf[2]);
+        var subType2Schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Object, subType2Schema.Type);
+        Assert.NotNull(subType2Schema.AllOf);
+        allOf = Assert.Single(subType2Schema.AllOf);
+        reference = Assert.IsType<OpenApiSchemaReference>(allOf);
+        Assert.Equal("BaseType", reference.Reference.Id);
+        Assert.Equal(["Property2"], subType2Schema.Properties.Keys);
+    }
+
+    [Fact]
+    public void GenerateSchema_PreservesIntermediateBaseProperties_WhenUsingOneOfPolymorphism()
+    {
+        // Arrange - define a type hierarchy A <- B <- C where only A and C are selected as known subtypes
+        var subject = Subject(configureGenerator: (c) =>
+        {
+            c.UseOneOfForPolymorphism = true;
+            c.SubTypesSelector = (type) => type == typeof(ModelOfA) ? [typeof(ModelOfC)] : [];
+        });
+
+        var schemaRepository = new SchemaRepository();
+
+        // Act
+        var schema = subject.GenerateSchema(typeof(ModelOfA), schemaRepository);
+
+        // Assert - polymorphic schema should be present
+        Assert.NotNull(schema.OneOf);
+
+        // Ensure base A schema contains PropA
+        Assert.True(schemaRepository.Schemas.ContainsKey(nameof(ModelOfA)));
+        var aSchema = schemaRepository.Schemas[nameof(ModelOfA)];
+        Assert.True(aSchema.Properties.ContainsKey(nameof(ModelOfA.PropertyOfA)));
+
+        // Find the C schema in the OneOf and assert it preserves B's properties while not duplicating A's
+        var cRef = schema.OneOf
+            .OfType<OpenApiSchemaReference>()
+            .First(r => r.Reference.Id == nameof(ModelOfC));
+
+        var cSchema = schemaRepository.Schemas[nameof(ModelOfC)];
+
+        // C should include PropC and properties declared on intermediate B
+        Assert.True(cSchema.Properties.ContainsKey(nameof(ModelOfC.PropertyOfC)));
+        Assert.True(cSchema.Properties.ContainsKey(nameof(ModelOfB.PropertyOfB)));
+
+        // A's property should not be in C's inline properties because it's provided by the referenced base schema
+        Assert.False(cSchema.Properties.ContainsKey(nameof(ModelOfA.PropertyOfA)));
+    }
+
+    public abstract class ModelOfA
+    {
+        public string PropertyOfA { get; set; }
+    }
+
+    public class ModelOfB : ModelOfA
+    {
+        public string PropertyOfB { get; set; }
+    }
+
+    public class ModelOfC : ModelOfB
+    {
+        public string PropertyOfC { get; set; }
+    }
+
+    [Fact]
+    public void GenerateSchema_SupportsOption_UseAllOfToExtendReferenceSchemas()
+    {
+        var subject = Subject(
+            configureGenerator: c => c.UseAllOfToExtendReferenceSchemas = true
+        );
+        var propertyInfo = typeof(SelfReferencingType).GetProperty(nameof(SelfReferencingType.Another));
+
+        var schema = subject.GenerateSchema(propertyInfo.PropertyType, new SchemaRepository(), memberInfo: propertyInfo);
+
+        Assert.IsNotType<OpenApiSchemaReference>(schema);
+        Assert.NotNull(schema.AllOf);
+        Assert.Single(schema.AllOf);
+    }
+
+    [Fact]
+    public void GenerateSchema_SupportsOption_UseInlineDefinitionsForEnums()
+    {
+        var subject = Subject(
+            configureGenerator: c => c.UseInlineDefinitionsForEnums = true
+        );
+
+        var schema = subject.GenerateSchema(typeof(IntEnum), new SchemaRepository());
+
+        Assert.Equal(JsonSchemaTypes.Integer, schema.Type);
+        Assert.NotNull(schema.Enum);
+    }
+
+    [Fact]
+    public void TypeWithNullableContextAnnotated_IsAnnotated()
+    {
+        // This is a sanity check to ensure that TypeWithNullableContextAnnotated
+        // is annotated with NullableContext(Flag=2) by the compiler. If this is no
+        // longer the case, you may need to add more of the Dummy properties to
+        // coerce the compiler.
+
+        const string Name = "System.Runtime.CompilerServices.NullableContextAttribute";
+
+        var nullableContext = typeof(TypeWithNullableContextAnnotated)
+            .GetCustomAttributes()
+            .FirstOrDefault(attr => string.Equals(attr.GetType().FullName, Name));
+
+        Assert.NotNull(nullableContext);
+
+        var flag = nullableContext?.GetType().GetField("Flag")?.GetValue(nullableContext);
+
+        Assert.Equal((byte)2, flag);
+    }
+
+    [Fact]
+    public void TypeWithNullableContextNotAnnotated_IsNotAnnotated()
+    {
+        // This is a sanity check to ensure that TypeWithNullableContextNotAnnotated
+        // is annotated with NullableContext(Flag=1) by the compiler. If this is no
+        // longer the case, you may need to add more of the Dummy properties to
+        // coerce the compiler.
+
+        const string Name = "System.Runtime.CompilerServices.NullableContextAttribute";
+
+        var nullableContext = typeof(TypeWithNullableContextNotAnnotated)
+            .GetCustomAttributes()
+            .FirstOrDefault(attr => string.Equals(attr.GetType().FullName, Name));
+
+        Assert.NotNull(nullableContext);
+
+        var flag = nullableContext?.GetType().GetField("Flag")?.GetValue(nullableContext);
+
+        Assert.Equal((byte)1, flag);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableInt), true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableInt), false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableString), true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableString), false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableArray), true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableArray), false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableList), true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableList), false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableInt), true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableInt), false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableString), true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableString), false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableArray), true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableArray), false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableList), true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableList), false)]
+    public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes(
+        Type declaringType,
+        string propertyName,
+        bool expectedNullable)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SupportNonNullableReferenceTypes = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(declaringType, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var propertySchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName];
+        AssertIsNullable(propertySchema, expectedNullable);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableDictionaryInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableDictionaryInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableDictionaryInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableDictionaryInNullableContent), true, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableDictionaryInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableDictionaryInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableDictionaryInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableDictionaryInNullableContent), true, true)]
+    public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes_NullableAttribute_Compiler_Optimizations_Situations_Dictionary(
+        Type declaringType,
+        string propertyName,
+        bool expectedNullableProperty,
+        bool expectedNullableContent)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SupportNonNullableReferenceTypes = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(declaringType, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var propertySchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName];
+        var contentSchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName].AdditionalProperties;
+        AssertIsNullable(propertySchema, expectedNullableProperty);
+        AssertIsNullable(contentSchema, expectedNullableContent);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableIDictionaryInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableIDictionaryInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableIDictionaryInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableIDictionaryInNullableContent), true, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableIDictionaryInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableIDictionaryInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableIDictionaryInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableIDictionaryInNullableContent), true, true)]
+    public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes_NullableAttribute_Compiler_Optimizations_Situations_IDictionary(
+        Type declaringType,
+        string propertyName,
+        bool expectedNullableProperty,
+        bool expectedNullableContent)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SupportNonNullableReferenceTypes = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(declaringType, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var propertySchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName];
+        var contentSchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName].AdditionalProperties;
+        AssertIsNullable(propertySchema, expectedNullableProperty);
+        AssertIsNullable(contentSchema, expectedNullableContent);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableIReadOnlyDictionaryInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableIReadOnlyDictionaryInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableIReadOnlyDictionaryInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableIReadOnlyDictionaryInNullableContent), true, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableIReadOnlyDictionaryInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableIReadOnlyDictionaryInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableIReadOnlyDictionaryInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableIReadOnlyDictionaryInNullableContent), true, true)]
+    public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes_NullableAttribute_Compiler_Optimizations_Situations_IReadOnlyDictionary(
+        Type declaringType,
+        string propertyName,
+        bool expectedNullableProperty,
+        bool expectedNullableContent)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SupportNonNullableReferenceTypes = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(declaringType, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var propertySchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName];
+        var contentSchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName].AdditionalProperties;
+        AssertIsNullable(propertySchema, expectedNullableProperty);
+        AssertIsNullable(contentSchema, expectedNullableContent);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableDictionaryWithValueTypeInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableDictionaryWithValueTypeInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableDictionaryWithValueTypeInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableDictionaryWithValueTypeInNullableContent), true, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableDictionaryWithValueTypeInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableDictionaryWithValueTypeInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableDictionaryWithValueTypeInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableDictionaryWithValueTypeInNullableContent), true, true)]
+    public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes_NullableAttribute_Compiler_Optimizations_Situations_DictionaryWithValueType(
+        Type declaringType,
+        string propertyName,
+        bool expectedNullableProperty,
+        bool expectedNullableContent)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SupportNonNullableReferenceTypes = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(declaringType, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var propertySchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName];
+        var contentSchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName].AdditionalProperties;
+        AssertIsNullable(propertySchema, expectedNullableProperty);
+        AssertIsNullable(contentSchema, expectedNullableContent);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableIDictionaryWithValueTypeInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableIDictionaryWithValueTypeInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableIDictionaryWithValueTypeInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableIDictionaryWithValueTypeInNullableContent), true, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableIDictionaryWithValueTypeInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableIDictionaryWithValueTypeInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableIDictionaryWithValueTypeInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableIDictionaryWithValueTypeInNullableContent), true, true)]
+    public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes_NullableAttribute_Compiler_Optimizations_Situations_IDictionaryWithValueType(
+        Type declaringType,
+        string propertyName,
+        bool expectedNullableProperty,
+        bool expectedNullableContent)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SupportNonNullableReferenceTypes = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(declaringType, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var propertySchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName];
+        var contentSchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName].AdditionalProperties;
+        AssertIsNullable(propertySchema, expectedNullableProperty);
+        AssertIsNullable(contentSchema, expectedNullableContent);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableIReadOnlyDictionaryWithValueTypeInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableIReadOnlyDictionaryWithValueTypeInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NonNullableIReadOnlyDictionaryWithValueTypeInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.NullableIReadOnlyDictionaryWithValueTypeInNullableContent), true, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableIReadOnlyDictionaryWithValueTypeInNonNullableContent), true, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableIReadOnlyDictionaryWithValueTypeInNonNullableContent), false, false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NonNullableIReadOnlyDictionaryWithValueTypeInNullableContent), false, true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.NullableIReadOnlyDictionaryWithValueTypeInNullableContent), true, true)]
+    public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes_NullableAttribute_Compiler_Optimizations_Situations_IReadOnlyDictionaryWithValueType(
+        Type declaringType,
+        string propertyName,
+        bool expectedNullableProperty,
+        bool expectedNullableContent)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SupportNonNullableReferenceTypes = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(declaringType, schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var propertySchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName];
+        var contentSchema = schemaRepository.Schemas[reference.Reference.Id].Properties[propertyName].AdditionalProperties;
+        AssertIsNullable(propertySchema, expectedNullableProperty);
+        AssertIsNullable(contentSchema, expectedNullableContent);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.SubTypeWithOneNullableContent), nameof(TypeWithNullableContextAnnotated.NullableString), true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.SubTypeWithOneNonNullableContent), nameof(TypeWithNullableContextAnnotated.NonNullableString), false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.SubTypeWithOneNullableContent), nameof(TypeWithNullableContextNotAnnotated.NullableString), true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.SubTypeWithOneNonNullableContent), nameof(TypeWithNullableContextNotAnnotated.NonNullableString), false)]
+    public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypesInDictionary_NullableAttribute_Compiler_Optimizations_Situations(
+        Type declaringType,
+        string subType,
+        string propertyName,
+        bool expectedNullable)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SupportNonNullableReferenceTypes = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        subject.GenerateSchema(declaringType, schemaRepository);
+
+        var propertySchema = schemaRepository.Schemas[subType].Properties[propertyName];
+        AssertIsNullable(propertySchema, expectedNullable);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.SubTypeWithOneNullableContent), nameof(TypeWithNullableContextAnnotated.NullableString), false)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.SubTypeWithOneNonNullableContent), nameof(TypeWithNullableContextAnnotated.NonNullableString), true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.SubTypeWithOneNullableContent), nameof(TypeWithNullableContextNotAnnotated.NullableString), false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.SubTypeWithOneNonNullableContent), nameof(TypeWithNullableContextNotAnnotated.NonNullableString), true)]
+    public void GenerateSchema_SupportsOption_NonNullableReferenceTypesAsRequired_RequiredAttribute_Compiler_Optimizations_Situations(
+        Type declaringType,
+        string subType,
+        string propertyName,
+        bool required)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.NonNullableReferenceTypesAsRequired = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        subject.GenerateSchema(declaringType, schemaRepository);
+
+        var propertyIsRequired = schemaRepository.Schemas[subType].Required.Contains(propertyName);
+        Assert.Equal(required, propertyIsRequired);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.SubTypeWithOneNonNullableContent), nameof(TypeWithNullableContextAnnotated.NonNullableString))]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.SubTypeWithOneNonNullableContent), nameof(TypeWithNullableContextNotAnnotated.NonNullableString))]
+    public void GenerateSchema_SupportsOption_SuppressImplicitRequiredAttributeForNonNullableReferenceTypes(
+        Type declaringType,
+        string subType,
+        string propertyName)
+    {
+        var subject = Subject(c => c.NonNullableReferenceTypesAsRequired = true);
+        var schemaRepository = new SchemaRepository();
+
+        subject.GenerateSchema(declaringType, schemaRepository);
+
+        var propertyIsRequired = schemaRepository.Schemas[subType].Required.Contains(propertyName);
+        Assert.True(propertyIsRequired);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.SubTypeWithOneNonNullableContent), nameof(TypeWithNullableContextAnnotated.NonNullableString))]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.SubTypeWithOneNonNullableContent), nameof(TypeWithNullableContextNotAnnotated.NonNullableString))]
+    public void GenerateSchema_NonNullableReferenceTypesAsRequired_DoesNotMarkPropertyAsNullable(
+        Type declaringType,
+        string subType,
+        string propertyName)
+    {
+        var subject = Subject(c => c.NonNullableReferenceTypesAsRequired = true);
+        var schemaRepository = new SchemaRepository();
+
+        subject.GenerateSchema(declaringType, schemaRepository);
+
+        var propertySchema = schemaRepository.Schemas[subType].Properties[propertyName];
+        AssertIsNullable(propertySchema, expected: false);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.SubTypeWithNestedSubType.Nested), nameof(TypeWithNullableContextAnnotated.SubTypeWithNestedSubType.Nested.NullableString), true)]
+    [InlineData(typeof(TypeWithNullableContextAnnotated), nameof(TypeWithNullableContextAnnotated.SubTypeWithNestedSubType.Nested), nameof(TypeWithNullableContextAnnotated.SubTypeWithNestedSubType.Nested.NonNullableString), false)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.SubTypeWithNestedSubType.Nested), nameof(TypeWithNullableContextAnnotated.SubTypeWithNestedSubType.Nested.NullableString), true)]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated), nameof(TypeWithNullableContextNotAnnotated.SubTypeWithNestedSubType.Nested), nameof(TypeWithNullableContextAnnotated.SubTypeWithNestedSubType.Nested.NonNullableString), false)]
+    public void GenerateSchema_SupportsOption_SupportNonNullableReferenceTypes_NestedWithinNested(
+        Type declaringType,
+        string subType,
+        string propertyName,
+        bool expectedNullable)
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SupportNonNullableReferenceTypes = true
+        );
+        var schemaRepository = new SchemaRepository();
+
+        subject.GenerateSchema(declaringType, schemaRepository);
+
+        var propertySchema = schemaRepository.Schemas[subType].Properties[propertyName];
+        AssertIsNullable(propertySchema, expectedNullable);
+    }
+
+    [Theory]
+    [InlineData(typeof(TypeWithNullableContextAnnotated))]
+    [InlineData(typeof(TypeWithNullableContextNotAnnotated))]
+    public void GenerateSchema_Works_IfNotProvidingMvcOptions(Type type)
+    {
+        var generatorOptions = new SchemaGeneratorOptions
+        {
+            NonNullableReferenceTypesAsRequired = true
+        };
+
+        var serializerOptions = new JsonSerializerOptions();
+
+        var subject = new SchemaGenerator(generatorOptions, new JsonSerializerDataContractResolver(serializerOptions, generatorOptions));
+        var schemaRepository = new SchemaRepository();
+
+        subject.GenerateSchema(type, schemaRepository);
+
+        var subType = nameof(TypeWithNullableContextAnnotated.SubTypeWithOneNonNullableContent);
+        var propertyName = nameof(TypeWithNullableContextAnnotated.NonNullableString);
+        var propertyIsRequired = schemaRepository.Schemas[subType].Required.Contains(propertyName);
+        Assert.True(propertyIsRequired);
+    }
+
+    [Fact]
+    public void GenerateSchema_HandlesTypesWithNestedTypes()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(ContainingType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.Object, schema.Type);
+        reference = Assert.IsType<OpenApiSchemaReference>(schema.Properties["Property1"]);
+        Assert.Equal("NestedType", reference.Reference.Id);
+    }
+
+    [Fact]
+    public void GenerateSchema_HandlesSquareArray()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(string[,]), schemaRepository);
+
+        Assert.NotNull(referenceSchema.Items);
+        Assert.NotNull(referenceSchema.Items.Type);
+        Assert.Equal(JsonSchemaTypes.String, referenceSchema.Items.Type);
+    }
+
+    [Fact]
+    public void GenerateSchema_HandlesRecursion_IfCalledAgainWithinAFilter()
+    {
+        var subject = Subject(
+            configureGenerator: c => c.SchemaFilters.Add(new RecursiveCallSchemaFilter())
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(typeof(ComplexType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        reference = Assert.IsType<OpenApiSchemaReference>(schema.Properties["Self"]);
+        Assert.Equal("ComplexType", reference.Reference.Id);
+    }
+
+    [Fact]
+    public void GenerateSchema_Errors_IfTypesHaveConflictingSchemaIds()
+    {
+        var subject = Subject();
+        var schemaRepository = new SchemaRepository();
+
+        subject.GenerateSchema(typeof(TestSupport.Namespace1.ConflictingType), schemaRepository);
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            subject.GenerateSchema(typeof(TestSupport.Namespace2.ConflictingType), schemaRepository);
+        });
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsSerializerOption_IgnoreReadonlyProperties()
+    {
+        var subject = Subject(
+            configureGenerator: c => { },
+            configureSerializer: c => { c.IgnoreReadOnlyProperties = true; }
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(typeof(ComplexType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsSerializerOption_PropertyNamingPolicy()
+    {
+        var subject = Subject(
+            configureGenerator: c => { },
+            configureSerializer: c => { c.PropertyNamingPolicy = JsonNamingPolicy.CamelCase; }
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(typeof(ComplexType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(["property1", "property2", "property3"], schema.Properties.Keys);
+    }
+
+    [Theory]
+    [InlineData(false, new[] { "\"Value2\"", "\"Value4\"", "\"Value8\"" }, "\"Value4\"")]
+    [InlineData(true, new[] { "\"value2\"", "\"value4\"", "\"value8\"" }, "\"value4\"")]
+    public void GenerateSchema_HonorsSerializerOption_StringEnumConverter(
+        bool camelCaseText,
+        string[] expectedEnumAsJson,
+        string expectedDefaultAsJson)
+    {
+        var subject = Subject(
+            configureGenerator: c => { c.UseInlineDefinitionsForEnums = true; },
+            configureSerializer: c => { c.Converters.Add(new JsonStringEnumConverter(namingPolicy: camelCaseText ? JsonNamingPolicy.CamelCase : null, true)); }
+        );
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(typeof(TypeWithDefaultAttributeOnEnum), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        var propertySchema = schema.Properties[nameof(TypeWithDefaultAttributeOnEnum.EnumWithDefault)];
+        Assert.Equal(JsonSchemaTypes.String, propertySchema.Type);
+        Assert.Equal(expectedEnumAsJson, propertySchema.Enum.Select(openApiAny => openApiAny.ToJson()));
+        Assert.Equal(expectedDefaultAsJson, propertySchema.Default.ToJson());
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsEnumDictionaryKeys_StringEnumConverter()
+    {
+        var subject = Subject();
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = subject.GenerateSchema(typeof(Dictionary<IntEnum, string>), schemaRepository);
+
+        Assert.Equal(typeof(IntEnum).GetEnumNames(), referenceSchema.Properties.Keys);
+    }
+
+    [Fact]
+    public void GenerateSchema_GeneratesDictionarySchema_IfEnumKeyHasDuplicateValues()
+    {
+        // Regression test for https://github.com/domaindrivendev/Swashbuckle.AspNetCore/issues/2956
+        var subject = Subject(
+            configureSerializer: c => c.Converters.Add(new JsonStringEnumConverter()));
+        var schemaRepository = new SchemaRepository();
+
+        var schema = subject.GenerateSchema(typeof(Dictionary<IntEnumWithDuplicateValues, string>), schemaRepository);
+
+        Assert.Equal(JsonSchemaTypes.Object, schema.Type);
+        Assert.Equal(["Unknown", "PreferredName"], schema.Properties.Keys);
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsSerializerAttribute_StringEnumConverter()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(JsonConverterAnnotatedEnum), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(JsonSchemaTypes.String, schema.Type);
+        Assert.Equal(["\"Value1\"", "\"Value2\"", "\"X\""], schema.Enum.Select(openApiAny => openApiAny.ToJson()));
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsSerializerAttributes_JsonIgnore()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(JsonIgnoreAnnotatedType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+
+        string[] expectedKeys =
+        [
+            nameof(JsonIgnoreAnnotatedType.StringWithJsonIgnoreConditionNever),
+            nameof(JsonIgnoreAnnotatedType.StringWithJsonIgnoreConditionWhenWritingDefault),
+            nameof(JsonIgnoreAnnotatedType.StringWithJsonIgnoreConditionWhenWritingNull),
+            nameof(JsonIgnoreAnnotatedType.StringWithNoAnnotation)
+        ];
+
+        Assert.Equal(expectedKeys, schema.Properties.Keys);
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsSerializerAttribute_JsonPropertyName()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(JsonPropertyNameAnnotatedType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(["string-with-json-property-name"], schema.Properties.Keys);
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsSerializerAttribute_JsonRequired()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(JsonRequiredAnnotatedType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.Equal(["StringWithJsonRequired"], schema.Required);
+        AssertIsNullable(schema.Properties["StringWithJsonRequired"]);
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsSerializerAttribute_JsonExtensionData()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(JsonExtensionDataAnnotatedType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+        Assert.True(schema.AdditionalPropertiesAllowed);
+        Assert.NotNull(schema.AdditionalProperties);
+        Assert.Null(schema.AdditionalProperties.Type);
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsAttribute_SwaggerIgnore()
+    {
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Subject().GenerateSchema(typeof(SwaggerIngoreAnnotatedType), schemaRepository);
+
+        var reference = Assert.IsType<OpenApiSchemaReference>(referenceSchema);
+        var schema = schemaRepository.Schemas[reference.Reference.Id];
+
+        Assert.True(schema.Properties.ContainsKey(nameof(SwaggerIngoreAnnotatedType.NotIgnoredString)));
+        Assert.False(schema.Properties.ContainsKey(nameof(SwaggerIngoreAnnotatedType.IgnoredString)));
+        Assert.False(schema.Properties.ContainsKey(nameof(SwaggerIngoreAnnotatedType.IgnoredExtensionData)));
+        Assert.False(schema.AdditionalPropertiesAllowed);
+        Assert.Null(schema.AdditionalProperties);
+    }
+
+    [Theory]
+    [InlineData(typeof(object))]
+    [InlineData(typeof(JsonDocument))]
+    [InlineData(typeof(JsonElement))]
+    public void GenerateSchema_GeneratesOpenSchema_IfDynamicJsonType(Type type)
+    {
+        var schema = Subject().GenerateSchema(type, new SchemaRepository());
+
+        Assert.IsNotType<OpenApiSchemaReference>(schema);
+        Assert.Null(schema.Type);
+    }
+
+    [Fact]
+    public void GenerateSchema_GeneratesSchema_IfParameterHasMaxLengthRouteConstraint()
+    {
+        var maxLength = 3;
+        var constraints = new List<IRouteConstraint>()
+        {
+            new MaxLengthRouteConstraint(maxLength)
+        };
+        var routeInfo = new ApiParameterRouteInfo
+        {
+            Constraints = constraints
+        };
+        var parameterInfo = typeof(FakeController)
+            .GetMethod(nameof(FakeController.ActionWithParameter))
+            .GetParameters()
+            .First();
+        var schema = Subject().GenerateSchema(typeof(string), new SchemaRepository(), parameterInfo: parameterInfo, routeInfo: routeInfo);
+        Assert.Equal(maxLength, schema.MaxLength);
+    }
+
+    [Fact]
+    public void GenerateSchema_GeneratesSchema_IfParameterHasMultipleConstraints()
+    {
+        var maxLength = 3;
+        var minLength = 1;
+        var constraints = new List<IRouteConstraint>()
+        {
+            new MaxLengthRouteConstraint(3),
+            new MinLengthRouteConstraint(minLength)
+        };
+        var routeInfo = new ApiParameterRouteInfo
+        {
+            Constraints = constraints
+        };
+        var parameterInfo = typeof(FakeController)
+            .GetMethod(nameof(FakeController.ActionWithParameter))
+            .GetParameters()
+            .First();
+        var schema = Subject().GenerateSchema(typeof(string), new SchemaRepository(), parameterInfo: parameterInfo, routeInfo: routeInfo);
+        Assert.Equal(maxLength, schema.MaxLength);
+        Assert.Equal(minLength, schema.MinLength);
+    }
+
+    [Fact]
+    public void GenerateSchema_GeneratesSchema_IfParameterHasTypeConstraints()
+    {
+        var constraints = new List<IRouteConstraint>()
+        {
+            new IntRouteConstraint(),
+        };
+        var routeInfo = new ApiParameterRouteInfo
+        {
+            Constraints = constraints
+        };
+        var parameterInfo = typeof(FakeController)
+            .GetMethod(nameof(FakeController.ActionWithParameter))
+            .GetParameters()
+            .First();
+        var schema = Subject().GenerateSchema(typeof(string), new SchemaRepository(), parameterInfo: parameterInfo, routeInfo: routeInfo);
+        Assert.Equal(JsonSchemaTypes.Integer, schema.Type);
+    }
+
+    private static SchemaGenerator Subject(
+        Action<SchemaGeneratorOptions> configureGenerator = null,
+        Action<JsonSerializerOptions> configureSerializer = null)
+    {
+        var generatorOptions = new SchemaGeneratorOptions();
+        configureGenerator?.Invoke(generatorOptions);
+
+        var serializerOptions = new JsonSerializerOptions();
+        configureSerializer?.Invoke(serializerOptions);
+
+        return new SchemaGenerator(generatorOptions, new JsonSerializerDataContractResolver(serializerOptions, generatorOptions));
+    }
+
+    private static void AssertIsNullable(IOpenApiSchema schema, bool expected = true)
+    {
+        Assert.True(schema.Type.HasValue);
+        Assert.Equal(expected, schema.Type.Value.HasFlag(JsonSchemaType.Null));
+    }
+
+    private static OpenApiSchema GenerateNullableAllOfPropertySchema()
+    {
+        var subject = Subject(configureGenerator: c =>
+        {
+            c.SupportNonNullableReferenceTypes = true;
+            c.CustomTypeMappings.Add(typeof(CustomAllOfType), () => new OpenApiSchema
+            {
+                AllOf =
+                [
+                    new OpenApiSchema { Type = JsonSchemaTypes.String }
+                ]
+            });
+        });
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNullableCustomAllOfProperty), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+
+        return Assert.IsType<OpenApiSchema>(generatedSchema.Properties[nameof(TypeWithNullableCustomAllOfProperty.Property)]);
+    }
+
+    private static OpenApiSchema GenerateNullableObjectDictionaryContentSchema()
+    {
+        var subject = Subject(configureGenerator: c => c.SupportNonNullableReferenceTypes = true);
+        var schemaRepository = new SchemaRepository();
+
+        var referenceSchema = Assert.IsType<OpenApiSchemaReference>(subject.GenerateSchema(typeof(TypeWithNullableObjectDictionary), schemaRepository));
+        var generatedSchema = schemaRepository.Schemas[referenceSchema.Reference.Id];
+        var propertySchema = generatedSchema.Properties[nameof(TypeWithNullableObjectDictionary.Property)];
+
+        return Assert.IsType<OpenApiSchema>(propertySchema.AdditionalProperties);
+    }
+
+    private static string SerializeSchemaInDocument(OpenApiSchema schema, OpenApiSpecVersion version)
+    {
+        using var stringWriter = new StringWriter();
+        var jsonWriter = new OpenApiJsonWriter(stringWriter);
+        var document = new OpenApiDocument
+        {
+            Info = new OpenApiInfo { Title = "Test", Version = "v1" },
+            Paths = new OpenApiPaths(),
+            Components = new OpenApiComponents
+            {
+                Schemas = new Dictionary<string, IOpenApiSchema>
+                {
+                    ["Test"] = schema
+                }
+            }
+        };
+
+        document.SerializeAs(version, jsonWriter);
+
+        return stringWriter.ToString();
     }
 }

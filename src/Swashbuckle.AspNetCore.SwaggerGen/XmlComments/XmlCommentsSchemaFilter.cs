@@ -1,59 +1,92 @@
-﻿using System;
-using System.Xml.XPath;
-using Microsoft.OpenApi.Models;
+﻿using System.Xml.XPath;
+using Microsoft.OpenApi;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen
+namespace Swashbuckle.AspNetCore.SwaggerGen;
+
+public class XmlCommentsSchemaFilter(IReadOnlyDictionary<string, XPathNavigator> xmlDocMembers, SwaggerGeneratorOptions options) : ISchemaFilter
 {
-    public class XmlCommentsSchemaFilter : ISchemaFilter
+    private readonly IReadOnlyDictionary<string, XPathNavigator> _xmlDocMembers = xmlDocMembers;
+    private readonly SwaggerGeneratorOptions _options = options;
+
+    public void Apply(IOpenApiSchema schema, SchemaFilterContext context)
     {
-        private readonly XPathNavigator _xmlNavigator;
+        ApplyTypeTags(schema, context);
 
-        public XmlCommentsSchemaFilter(XPathDocument xmlDoc)
+        if (context.MemberInfo != null)
         {
-            _xmlNavigator = xmlDoc.CreateNavigator();
+            ApplyMemberTags(schema, context);
         }
+    }
 
-        public void Apply(OpenApiSchema schema, SchemaFilterContext context)
+    private void ApplyTypeTags(IOpenApiSchema schema, SchemaFilterContext context)
+    {
+        var typeMemberName = XmlCommentsNodeNameHelper.GetMemberNameForType(context.Type);
+
+        if (!_xmlDocMembers.TryGetValue(typeMemberName, out var memberNode)) return;
+
+        var typeSummaryNode = memberNode.SelectFirstChild("summary");
+
+        if (typeSummaryNode != null && (context.MemberInfo is null || schema.Description is null))
         {
-            ApplyTypeTags(schema, context.Type);
+            // For a member's schema the type's summary is only a fallback: it must not
+            // overwrite a description a member's summary has already provided, such as by
+            // an XmlCommentsSchemaFilter for another XML comments file when comments are
+            // included from multiple assemblies.
+            // See https://github.com/domaindrivendev/Swashbuckle.AspNetCore/issues/3240.
+            schema.Description = XmlCommentsTextHelper.Humanize(typeSummaryNode.InnerXml, _options?.XmlCommentEndOfLine);
+        }
+    }
 
-            if (context.MemberInfo != null)
+    private void ApplyMemberTags(IOpenApiSchema schema, SchemaFilterContext context)
+    {
+        var fieldOrPropertyMemberName = XmlCommentsNodeNameHelper.GetMemberNameForFieldOrProperty(context.MemberInfo);
+
+        var recordTypeName = XmlCommentsNodeNameHelper.GetMemberNameForType(context.MemberInfo.DeclaringType);
+
+        if (_xmlDocMembers.TryGetValue(recordTypeName, out var recordTypeNode))
+        {
+            XPathNavigator recordDefaultConstructorProperty = recordTypeNode.SelectFirstChildWithAttribute("param", "name", context.MemberInfo.Name);
+
+            if (recordDefaultConstructorProperty != null)
             {
-                ApplyMemberTags(schema, context);
+                var summaryNode = recordDefaultConstructorProperty.Value;
+                if (summaryNode != null)
+                {
+                    schema.Description = XmlCommentsTextHelper.Humanize(summaryNode, _options?.XmlCommentEndOfLine);
+                }
+
+                if (schema is OpenApiSchema concrete)
+                {
+                    var example = recordDefaultConstructorProperty.GetAttribute("example");
+                    if (!string.IsNullOrEmpty(example))
+                    {
+                        TrySetExample(concrete, context, example);
+                    }
+                }
             }
         }
 
-        private void ApplyTypeTags(OpenApiSchema schema, Type type)
+        if (_xmlDocMembers.TryGetValue(fieldOrPropertyMemberName, out var fieldOrPropertyNode))
         {
-            var typeMemberName = XmlCommentsNodeNameHelper.GetMemberNameForType(type);
-            var typeSummaryNode = _xmlNavigator.SelectSingleNode($"/doc/members/member[@name='{typeMemberName}']/summary");
-
-            if (typeSummaryNode != null)
-            {
-                schema.Description = XmlCommentsTextHelper.Humanize(typeSummaryNode.InnerXml);
-            }
-        }
-
-        private void ApplyMemberTags(OpenApiSchema schema, SchemaFilterContext context)
-        {
-            var fieldOrPropertyMemberName = XmlCommentsNodeNameHelper.GetMemberNameForFieldOrProperty(context.MemberInfo);
-            var fieldOrPropertyNode = _xmlNavigator.SelectSingleNode($"/doc/members/member[@name='{fieldOrPropertyMemberName}']");
-
-            if (fieldOrPropertyNode == null) return;
-
-            var summaryNode = fieldOrPropertyNode.SelectSingleNode("summary");
+            var summaryNode = fieldOrPropertyNode.SelectFirstChild("summary");
             if (summaryNode != null)
-                schema.Description = XmlCommentsTextHelper.Humanize(summaryNode.InnerXml);
-
-            var exampleNode = fieldOrPropertyNode.SelectSingleNode("example");
-            if (exampleNode != null)
             {
-                var exampleAsJson = (schema.ResolveType(context.SchemaRepository) == "string") && !exampleNode.Value.Equals("null")
-                    ? $"\"{exampleNode.ToString()}\""
-                    : exampleNode.ToString();
-
-                schema.Example = OpenApiAnyFactory.CreateFromJson(exampleAsJson);
+                schema.Description = XmlCommentsTextHelper.Humanize(summaryNode.InnerXml, _options?.XmlCommentEndOfLine);
             }
+
+            if (schema is OpenApiSchema concrete)
+            {
+                var exampleNode = fieldOrPropertyNode.SelectFirstChild("example");
+                TrySetExample(concrete, context, exampleNode?.Value);
+            }
+        }
+    }
+
+    private static void TrySetExample(OpenApiSchema schema, SchemaFilterContext context, string example)
+    {
+        if (example != null)
+        {
+            schema.Example = XmlCommentsExampleHelper.Create(context.SchemaRepository, schema, example);
         }
     }
 }

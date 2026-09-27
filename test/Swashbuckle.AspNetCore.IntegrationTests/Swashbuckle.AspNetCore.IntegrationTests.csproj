@@ -1,36 +1,64 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <AssemblyOriginatorKeyFile>Swashbuckle.AspNetCore.IntegrationTests.snk</AssemblyOriginatorKeyFile>
+    <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)..\..\src\Swashbuckle.AspNetCore.Swagger\Swashbuckle.AspNetCore.Swagger.snk</AssemblyOriginatorKeyFile>
     <NoWarn>$(NoWarn);8002</NoWarn>
+    <OutputType>Exe</OutputType>
     <SignAssembly>true</SignAssembly>
-    <TargetFramework>net6.0</TargetFramework>
+    <TargetFrameworks>$(DefaultTargetFrameworks)</TargetFrameworks>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\WebSites\Basic\Basic.csproj" />
-    <ProjectReference Include="..\WebSites\CliExample\CliExample.csproj" />
-    <ProjectReference Include="..\WebSites\ConfigFromFile\ConfigFromFile.csproj" />
-    <ProjectReference Include="..\WebSites\CustomUIConfig\CustomUIConfig.csproj" />
-    <ProjectReference Include="..\WebSites\CustomUIIndex\CustomUIIndex.csproj" />
-    <ProjectReference Include="..\WebSites\GenericControllers\GenericControllers.csproj" />
-    <ProjectReference Include="..\WebSites\MultipleVersions\MultipleVersions.csproj" />
-    <ProjectReference Include="..\WebSites\NetCore21\NetCore21.csproj" />
-    <ProjectReference Include="..\WebSites\OAuth2Integration\OAuth2Integration.csproj" />
-    <ProjectReference Include="..\WebSites\ReDoc\ReDoc.csproj" />
-    <ProjectReference Include="..\WebSites\TestFirst\TestFirst.csproj" />
+    <ProjectReference Include="..\Swashbuckle.AspNetCore.TestSupport\Swashbuckle.AspNetCore.TestSupport.csproj" />
+    <ProjectReference Include="..\WebSites\**\*.csproj" />
+    <ProjectReference Remove="..\WebSites\TestFirst.IntegrationTests\TestFirst.IntegrationTests.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="16.2.0" />
-    <PackageReference Include="xunit" Version="2.4.1" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.4.3">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-    <PackageReference Include="coverlet.collector" Version="1.0.1" />
-    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="3.0.0" />
-    <PackageReference Include="Microsoft.OpenApi.Readers" Version="1.2.3" />
+    <PackageReference Include="MartinCostello.Logging.XUnit.v3" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
+    <PackageReference Include="Microsoft.Kiota.Bundle" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Microsoft.OpenApi.YamlReader" />
+    <PackageReference Include="Microsoft.Playwright" />
+    <PackageReference Include="NJsonSchema" />
+    <PackageReference Include="Verify.XunitV3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="xunit.v3.mtp-off" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="ProjectRoot" Value="$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)'))" />
+    <AssemblyMetadata Include="SolutionRoot" Value="$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)\..\..'))" />
+    <Compile Remove="snapshots\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net10.0'))">
+    <PackageReference Include="Microsoft.Build" />
+    <PackageReference Include="MSBuild.ProjectCreation" />
+    <PackageReference Include="NSwag.CodeGeneration.CSharp" />
+    <ProjectReference Include="..\Swashbuckle.AspNetCore.TestSupport\Swashbuckle.AspNetCore.TestSupport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="../../src/Swashbuckle.AspNetCore.SwaggerUI/node_modules/swagger-ui-dist/**/*" Exclude="**/*/index.html;**/*/index.js;**/*/*.map;**/*/*.json;**/*/*.md;**/*/swagger-ui-es-*;**/*/LICENSE;**/*/NOTICE" Link="Embedded/SwaggerUI/%(RecursiveDir)%(FileName)%(Extension)" />
+    <EmbeddedResource Include="../../src/Swashbuckle.AspNetCore.ReDoc/node_modules/redoc/bundles/redoc.standalone.js" Link="Embedded/ReDoc/%(RecursiveDir)%(FileName)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">
+    <PackageReference Update="Microsoft.AspNetCore.Mvc.Testing" VersionOverride="8.0.31" />
+    <PackageReference Update="Microsoft.AspNetCore.TestHost" VersionOverride="8.0.31" />
+  </ItemGroup>
+
+  <ItemGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net9.0'))">
+    <PackageReference Update="Microsoft.AspNetCore.Mvc.Testing" VersionOverride="9.0.20" />
+    <PackageReference Update="Microsoft.AspNetCore.TestHost" VersionOverride="9.0.20" />
+  </ItemGroup>
+
+  <ItemGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net10.0'))">
+    <PackageReference Update="Microsoft.AspNetCore.Mvc.Testing" VersionOverride="10.0.12" />
+    <PackageReference Update="Microsoft.AspNetCore.TestHost" VersionOverride="10.0.12" />
   </ItemGroup>
 
 </Project>

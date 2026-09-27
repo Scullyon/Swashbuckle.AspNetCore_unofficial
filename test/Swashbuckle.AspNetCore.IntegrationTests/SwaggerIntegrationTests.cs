@@ -1,116 +1,386 @@
-﻿using System;
 using System.Globalization;
-using System.Linq;
+using System.Net;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
-using System.Threading.Tasks;
-using Microsoft.OpenApi.Any;
-using Microsoft.OpenApi.Readers;
-using Xunit;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.OpenApi;
+using Swashbuckle.AspNetCore.SwaggerGen;
 using ReDocApp = ReDoc;
 
-namespace Swashbuckle.AspNetCore.IntegrationTests
+namespace Swashbuckle.AspNetCore.IntegrationTests;
+
+[Collection("TestSite")]
+public class SwaggerIntegrationTests(ITestOutputHelper outputHelper)
 {
-    public class SwaggerIntegrationTests
+    [Theory]
+    [InlineData(typeof(Basic.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(Basic.Startup), "/swagger/v1/swaggerv2.json")]
+    [InlineData(typeof(Basic.Startup), "/swagger/v1/swaggerv3_1.json")]
+    [InlineData(typeof(CliExample.Startup), "/swagger/v1/swagger_net10.0.json")]
+    [InlineData(typeof(ConfigFromFile.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(CustomUIConfig.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(CustomUIIndex.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(GenericControllers.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(MultipleVersions.Startup), "/swagger/1.0/swagger.json")]
+    [InlineData(typeof(MultipleVersions.Startup), "/swagger/2.0/swagger.json")]
+    [InlineData(typeof(NSwagClientExample.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(OAuth2Integration.Startup), "/resource-server/swagger/v1/swagger.json")]
+    [InlineData(typeof(ReDocApp.Startup), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(TestFirst.Startup), "/swagger/v1-generated/openapi.json")]
+    public async Task SwaggerEndpoint_ReturnsValidSwaggerJson(
+        Type startupType,
+        string swaggerRequestUri)
     {
-        [Theory]
-        [InlineData(typeof(Basic.Startup), "/swagger/v1/swagger.json")]
-        [InlineData(typeof(CliExample.Startup), "/swagger/v1/swagger.json")]
-        [InlineData(typeof(ConfigFromFile.Startup), "/swagger/v1/swagger.json")]
-        [InlineData(typeof(CustomUIConfig.Startup), "/swagger/v1/swagger.json")]
-        [InlineData(typeof(CustomUIIndex.Startup), "/swagger/v1/swagger.json")]
-        [InlineData(typeof(GenericControllers.Startup), "/swagger/v1/swagger.json")]
-        [InlineData(typeof(MultipleVersions.Startup), "/swagger/1.0/swagger.json")]
-        [InlineData(typeof(MultipleVersions.Startup), "/swagger/2.0/swagger.json")]
-        //[InlineData(typeof(NetCore21.Startup), "/swagger/v1/swagger.json")]
-        [InlineData(typeof(OAuth2Integration.Startup), "/resource-server/swagger/v1/swagger.json")]
-        [InlineData(typeof(ReDocApp.Startup), "/swagger/v1/swagger.json")]
-        [InlineData(typeof(TestFirst.Startup), "/swagger/v1-generated/openapi.json")]
-        public async Task SwaggerEndpoint_ReturnsValidSwaggerJson(
-            Type startupType,
-            string swaggerRequestUri)
+        var testSite = new TestSite(startupType, outputHelper);
+        using var client = testSite.BuildClient();
+
+        await AssertValidSwaggerJson(client, swaggerRequestUri);
+    }
+
+    [Fact]
+    public async Task SwaggerEndpoint_ReturnsValidSwaggerJson_ForAutofaq()
+    {
+        var testSite = new TestSiteAutofaq(typeof(CliExampleWithFactory.Startup), outputHelper);
+        using var client = testSite.BuildClient();
+
+        await AssertValidSwaggerJson(client, "/swagger/v1/swagger_net10.0.json");
+    }
+
+    [Fact]
+    public async Task SwaggerEndpoint_ReturnsNotFound_IfUnknownSwaggerDocument()
+    {
+        var testSite = new TestSite(typeof(Basic.Startup), outputHelper);
+        using var client = testSite.BuildClient();
+
+        using var swaggerResponse = await client.GetAsync("/swagger/v2/swagger.json", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.NotFound, swaggerResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task SwaggerEndpoint_ReturnsMetadata_ForHeadRequest()
+    {
+        var testSite = new TestSite(typeof(Basic.Startup), outputHelper);
+        using var client = testSite.BuildClient();
+        using var request = new HttpRequestMessage(HttpMethod.Head, "/swagger/v1/swagger.json");
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.Content.Headers.ContentLength > 0, "Content-Length should not be zero.");
+        Assert.Empty(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task SwaggerEndpoint_DoesNotReturnByteOrderMark()
+    {
+        var testSite = new TestSite(typeof(Basic.Startup), outputHelper);
+        using var client = testSite.BuildClient();
+
+        using var swaggerResponse = await client.GetAsync("/swagger/v1/swagger.json", TestContext.Current.CancellationToken);
+
+        swaggerResponse.EnsureSuccessStatusCode();
+        var contentBytes = await swaggerResponse.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken);
+        var bomBytes = Encoding.UTF8.GetPreamble();
+        Assert.NotEqual(bomBytes, contentBytes.Take(bomBytes.Length));
+    }
+
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("sv-SE")]
+    public async Task SwaggerEndpoint_ReturnsCorrectPriceExample_ForDifferentCultures(string culture)
+    {
+        var testSite = new TestSite(typeof(Basic.Startup), outputHelper);
+        using var client = testSite.BuildClient();
+
+        using var swaggerResponse = await client.GetAsync($"/swagger/v1/swagger.json?culture={culture}", TestContext.Current.CancellationToken);
+
+        swaggerResponse.EnsureSuccessStatusCode();
+        using var contentStream = await swaggerResponse.Content.ReadAsStreamAsync(TestContext.Current.CancellationToken);
+        var currentCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        try
         {
-            var testSite = new TestSite(startupType);
-            var client = testSite.BuildClient();
+            var openApiDocument = await OpenApiDocumentLoader.LoadAsync(contentStream);
+            var example = openApiDocument.Components.Schemas["Product"].Example;
+            double price = example["price"].GetValue<double>();
+            Assert.Equal(14.37, price);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = currentCulture;
+        }
+    }
 
-            var swaggerResponse = await client.GetAsync(swaggerRequestUri);
+    [Theory]
+    [InlineData("/swagger/v1/swagger.json", "openapi", "3.0.4")]
+    [InlineData("/swagger/v1/swaggerv2.json", "swagger", "2.0")]
+    [InlineData("/swagger/v1/swaggerv3_1.json", "openapi", "3.1.1")]
+    public async Task SwaggerMiddleware_CanBeConfiguredMultipleTimes(
+        string swaggerUrl,
+        string expectedVersionProperty,
+        string expectedVersionValue)
+    {
+        using var client = new TestSite(typeof(Basic.Startup), outputHelper).BuildClient();
 
-            swaggerResponse.EnsureSuccessStatusCode();
-            var contentStream = await swaggerResponse.Content.ReadAsStreamAsync();
-            new OpenApiStreamReader().Read(contentStream, out OpenApiDiagnostic diagnostic);
-            Assert.Empty(diagnostic.Errors);
+        using var response = await client.GetAsync(swaggerUrl, TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        using var contentStream = await response.Content.ReadAsStreamAsync(TestContext.Current.CancellationToken);
+
+        var json = await JsonSerializer.DeserializeAsync<JsonElement>(contentStream, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(expectedVersionValue, json.GetProperty(expectedVersionProperty).GetString());
+    }
+
+    [Theory]
+    [InlineData(typeof(MinimalApp.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(MinimalAppWithNullableEnums.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(MultipleResponseTypes.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(MvcWithNullable.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(TodoApp.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(TopLevelSwaggerDoc.Program), "/swagger/v1.json")]
+    [InlineData(typeof(WebApi.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(WebApi.Aot.Program), "/swagger/v1/swagger.json")]
+    [InlineData(typeof(Authorization.Program), "/swagger/v1/swagger.json")]
+    public async Task SwaggerEndpoint_ReturnsValidSwaggerJson_Without_Startup(
+        Type entryPointType,
+        string swaggerRequestUri)
+    {
+        await SwaggerEndpointReturnsValidSwaggerJson(entryPointType, swaggerRequestUri);
+    }
+
+    [Fact]
+    public async Task TypesAreRenderedCorrectly()
+    {
+        using var application = new TestApplication<WebApi.Program>();
+        using var client = application.CreateDefaultClient();
+
+        using var response = await client.GetAsync("/swagger/v1/swagger.json", TestContext.Current.CancellationToken);
+
+        var content = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(response.IsSuccessStatusCode, content);
+
+        using var swaggerResponse = await JsonDocument.ParseAsync(
+            await response.Content.ReadAsStreamAsync(TestContext.Current.CancellationToken),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var weatherForecase = swaggerResponse.RootElement
+            .GetProperty("components")
+            .GetProperty("schemas")
+            .GetProperty("WeatherForecast");
+
+        Assert.Equal("object", weatherForecase.GetProperty("type").GetString());
+
+        var properties = weatherForecase.GetProperty("properties");
+        Assert.Equal(4, properties.EnumerateObject().Count());
+
+        Assert.Multiple(
+        [
+            () => Assert.Equal("string", properties.GetProperty("date").GetProperty("type").GetString()),
+            () => Assert.Equal("date", properties.GetProperty("date").GetProperty("format").GetString()),
+            () => Assert.Equal("integer", properties.GetProperty("temperatureC").GetProperty("type").GetString()),
+            () => Assert.Equal("int32", properties.GetProperty("temperatureC").GetProperty("format").GetString()),
+            () => Assert.Equal("string", properties.GetProperty("summary").GetProperty("type").GetString()),
+            () => Assert.True(properties.GetProperty("summary").GetProperty("nullable").GetBoolean()),
+            () => Assert.Equal("integer", properties.GetProperty("temperatureF").GetProperty("type").GetString()),
+            () => Assert.Equal("int32", properties.GetProperty("temperatureF").GetProperty("format").GetString()),
+            () => Assert.True(properties.GetProperty("temperatureF").GetProperty("readOnly").GetBoolean()),
+        ]);
+    }
+
+    private static async Task SwaggerEndpointReturnsValidSwaggerJson(Type entryPointType, string swaggerRequestUri)
+    {
+        using var client = GetHttpClientForTestApplication(entryPointType);
+        await AssertValidSwaggerJson(client, swaggerRequestUri);
+    }
+
+    internal static HttpClient GetHttpClientForTestApplication(Type entryPointType)
+    {
+        var applicationType = typeof(TestApplication<>).MakeGenericType(entryPointType);
+        var application = (IDisposable)Activator.CreateInstance(applicationType);
+        Assert.NotNull(application);
+
+        var createClientMethod = applicationType
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .FirstOrDefault(m => m.Name == "CreateDefaultClient" && m.GetParameters().Length == 1)
+            ?? throw new InvalidOperationException($"The method CreateDefaultClient was not found on TestApplication<{entryPointType.FullName}>.");
+
+        // Pass null for DelegatingHandler[]
+        var parameters = new object[] { null };
+
+        var clientObject = (IDisposable)createClientMethod.Invoke(application, parameters);
+        if (clientObject is not HttpClient client)
+        {
+            throw new InvalidOperationException($"The method CreateDefaultClient on TestApplication<{entryPointType.FullName}> did not return an HttpClient.");
         }
 
-        [Fact]
-        public async Task SwaggerEndpoint_ReturnsNotFound_IfUnknownSwaggerDocument()
+        return client;
+    }
+
+    private static async Task AssertValidSwaggerJson(HttpClient client, string swaggerRequestUri)
+    {
+        using var swaggerResponse = await client.GetAsync(swaggerRequestUri);
+
+        Assert.True(swaggerResponse.IsSuccessStatusCode, $"IsSuccessStatusCode is false. Response: '{await swaggerResponse.Content.ReadAsStringAsync()}'");
+        using var contentStream = await swaggerResponse.Content.ReadAsStreamAsync();
+        var (_, diagnostic) = await OpenApiDocumentLoader.LoadWithDiagnosticsAsync(contentStream);
+        Assert.NotNull(diagnostic);
+        Assert.Empty(diagnostic.Errors);
+        Assert.Empty(diagnostic.Warnings);
+    }
+
+    [Theory]
+    [InlineData("//evil.example.com")]
+    [InlineData("/\\evil.example.com")]
+    public async Task SwaggerMiddleware_Discards_A_Path_Base_That_Is_Not_Same_Origin(string forwardedPrefix)
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var server = TestSite.CreateServer((app) =>
         {
-            var testSite = new TestSite(typeof(Basic.Startup));
-            var client = testSite.BuildClient();
+            app.UseForwardedHeaders(new() { ForwardedHeaders = ForwardedHeaders.XForwardedPrefix });
+            app.UseSwagger();
+        });
 
-            var swaggerResponse = await client.GetAsync("/swagger/v2/swagger.json");
+        using var client = server.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/swagger/v1/swagger.json");
+        request.Headers.TryAddWithoutValidation("X-Forwarded-Prefix", forwardedPrefix);
 
-            Assert.Equal(System.Net.HttpStatusCode.NotFound, swaggerResponse.StatusCode);
+        // Act
+        using var response = await client.SendAsync(request, cancellationToken);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        outputHelper.WriteLine(json);
+
+        using var document = JsonDocument.Parse(json);
+
+        Assert.False(document.RootElement.TryGetProperty("servers", out var servers), $"servers was emitted as {servers}.");
+        Assert.DoesNotContain("evil.example.com", json);
+    }
+
+    [Theory]
+    [InlineData("/api")]
+    [InlineData("/some/nested/prefix")]
+    public async Task SwaggerMiddleware_Still_Emits_A_Same_Origin_Path_Base(string forwardedPrefix)
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var server = TestSite.CreateServer((app) =>
+        {
+            app.UseForwardedHeaders(new() { ForwardedHeaders = ForwardedHeaders.XForwardedPrefix });
+            app.UseSwagger();
+        });
+
+        using var client = server.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/swagger/v1/swagger.json");
+        request.Headers.TryAddWithoutValidation("X-Forwarded-Prefix", forwardedPrefix);
+
+        // Act
+        using var response = await client.SendAsync(request, cancellationToken);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        outputHelper.WriteLine(json);
+
+        using var document = JsonDocument.Parse(json);
+
+        var serverUrl = document.RootElement
+            .GetProperty("servers")[0]
+            .GetProperty("url")
+            .GetString();
+
+        Assert.Equal(forwardedPrefix, serverUrl);
+
+        var documentUrl = new Uri("https://victim.example.org/swagger/v1/swagger.json");
+        var resolved = new Uri(documentUrl, serverUrl);
+
+        Assert.Equal(documentUrl.Host, resolved.Host);
+    }
+
+    [Fact]
+    public async Task SwaggerMiddleware_Marks_A_Request_Derived_Document_As_Private()
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var server = TestSite.CreateServer((app) =>
+        {
+            app.UseForwardedHeaders(new() { ForwardedHeaders = ForwardedHeaders.XForwardedPrefix });
+            app.UseSwagger();
+        });
+
+        using var client = server.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/swagger/v1/swagger.json");
+        request.Headers.TryAddWithoutValidation("X-Forwarded-Prefix", "/api");
+
+        // Act
+        using var response = await client.SendAsync(request, cancellationToken);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.NotNull(response.Headers.CacheControl);
+        Assert.True(response.Headers.CacheControl.Private);
+    }
+
+    [Fact]
+    public async Task SwaggerMiddleware_Leaves_Caching_Alone_When_There_Is_No_Path_Base()
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var server = TestSite.CreateServer((app) => app.UseSwagger());
+        using var client = server.CreateClient();
+
+        // Act
+        using var response = await client.GetAsync("/swagger/v1/swagger.json", cancellationToken);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Null(response.Headers.CacheControl);
+    }
+
+    [Fact]
+    public async Task SwaggerMiddleware_Regenerates_The_Document_For_Every_Request()
+    {
+        // Arrange
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var server = TestSite.CreateServer(
+            (app) => app.UseSwagger(),
+            (services) => services.AddSwaggerGen((options) => options.DocumentFilter<CountingDocumentFilter>()));
+
+        using var client = server.CreateClient();
+
+        CountingDocumentFilter.Invocations = 0;
+
+        // Act
+        for (int i = 0; i < 5; i++)
+        {
+            using var response = await client.GetAsync("/swagger/v1/swagger.json", cancellationToken);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         }
 
-        [Fact]
-        public async Task SwaggerEndpoint_DoesNotReturnByteOrderMark()
-        {
-            var testSite = new TestSite(typeof(Basic.Startup));
-            var client = testSite.BuildClient();
+        // Assert
+        outputHelper.WriteLine($"The document was generated {CountingDocumentFilter.Invocations} times for 5 requests.");
+        Assert.Equal(5, CountingDocumentFilter.Invocations);
+    }
 
-            var swaggerResponse = await client.GetAsync("/swagger/v1/swagger.json");
+    private sealed class CountingDocumentFilter : IDocumentFilter
+    {
+        public static int Invocations;
 
-            swaggerResponse.EnsureSuccessStatusCode();
-            var contentBytes = await swaggerResponse.Content.ReadAsByteArrayAsync();
-            var bomBytes = Encoding.UTF8.GetPreamble();
-            Assert.NotEqual(bomBytes, contentBytes.Take(bomBytes.Length));
-        }
-
-        [Theory]
-        [InlineData("en-US")]
-        [InlineData("sv-SE")]
-        public async Task SwaggerEndpoint_ReturnsCorrectPriceExample_ForDifferentCultures(string culture)
-        {
-            var testSite = new TestSite(typeof(Basic.Startup));
-            var client = testSite.BuildClient();
-
-            var swaggerResponse = await client.GetAsync($"/swagger/v1/swagger.json?culture={culture}");
-
-            swaggerResponse.EnsureSuccessStatusCode();
-            var contentStream = await swaggerResponse.Content.ReadAsStreamAsync();
-            var currentCulture = CultureInfo.CurrentCulture;
-            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-            try
-            {
-                var openApiDocument = new OpenApiStreamReader().Read(contentStream, out OpenApiDiagnostic diagnostic);
-                var example = openApiDocument.Components.Schemas["Product"].Example as OpenApiObject;
-                var price = (example["price"] as OpenApiDouble);
-                Assert.NotNull(price);
-                Assert.Equal(14.37, price.Value);
-            }
-            finally
-            {
-                CultureInfo.CurrentCulture = currentCulture;
-            }
-        }
-
-        [Theory]
-        [InlineData("/swagger/v1/swagger.json", "openapi", "3.0.1")]
-        [InlineData("/swagger/v1/swaggerv2.json", "swagger", "2.0")]
-        public async Task SwaggerMiddleware_CanBeConfiguredMultipleTimes(
-            string swaggerUrl,
-            string expectedVersionProperty,
-            string expectedVersionValue)
-        {
-            var client = new TestSite(typeof(Basic.Startup)).BuildClient();
-
-            var response = await client.GetAsync(swaggerUrl);
-
-            response.EnsureSuccessStatusCode();
-            var contentStream = await response.Content.ReadAsStreamAsync();
-
-            var json = await JsonSerializer.DeserializeAsync<JsonElement>(contentStream);
-            Assert.Equal(expectedVersionValue, json.GetProperty(expectedVersionProperty).GetString());
-        }
+        public void Apply(OpenApiDocument swaggerDoc, DocumentFilterContext context)
+            => Interlocked.Increment(ref Invocations);
     }
 }

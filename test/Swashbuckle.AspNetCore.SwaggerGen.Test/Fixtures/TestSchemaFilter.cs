@@ -1,14 +1,16 @@
-﻿using Microsoft.OpenApi.Any;
-using Microsoft.OpenApi.Models;
+﻿using Microsoft.OpenApi;
 
-namespace Swashbuckle.AspNetCore.SwaggerGen.Test
+namespace Swashbuckle.AspNetCore.SwaggerGen.Test;
+
+public class TestSchemaFilter : ISchemaFilter
 {
-    public class TestSchemaFilter : ISchemaFilter
+    public void Apply(IOpenApiSchema schema, SchemaFilterContext context)
     {
-        public void Apply(OpenApiSchema schema, SchemaFilterContext context)
+        if (schema is OpenApiSchema openApiSchema)
         {
-            schema.Extensions.Add("X-foo", new OpenApiString("bar"));
-            schema.Extensions.Add("X-docName", new OpenApiString(context.DocumentName));
+            openApiSchema.Extensions ??= new Dictionary<string, IOpenApiExtension>();
+            openApiSchema.Extensions.Add("X-foo", new JsonNodeExtension("bar"));
+            openApiSchema.Extensions.Add("X-docName", new JsonNodeExtension(context.DocumentName));
         }
     }
 }

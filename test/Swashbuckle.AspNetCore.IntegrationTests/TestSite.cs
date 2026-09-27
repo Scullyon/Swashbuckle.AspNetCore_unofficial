@@ -1,47 +1,123 @@
-﻿using System;
-using System.IO;
-using System.Net.Http;
-using System.Reflection;
+﻿using System.Globalization;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
-namespace Swashbuckle.AspNetCore.IntegrationTests
+namespace Swashbuckle.AspNetCore.IntegrationTests;
+
+public class TestSite(Type startupType, ITestOutputHelper outputHelper)
 {
-    public class TestSite
+    private IHost _host;
+    private TestServer _server;
+
+    public static TestServer CreateServer(
+        Action<IApplicationBuilder> configure,
+        Action<IServiceCollection> configureServices = null)
     {
-        private readonly Type _startupType;
+        var builder = new HostBuilder()
+            .ConfigureWebHost((webHost) =>
+            {
+                webHost.UseTestServer();
+                webHost.ConfigureServices((services) =>
+                {
+                    services.AddRouting();
+                    services.AddControllers();
+                    services.AddSwaggerGen();
+                    configureServices?.Invoke(services);
+                });
+                webHost.Configure(configure);
+            });
 
-        public TestSite(Type startupType)
+        var host = builder.Build();
+        host.Start();
+
+        return host.GetTestServer();
+    }
+
+    public virtual TestServer BuildServer()
+    {
+        if (_server is null)
         {
-            _startupType = startupType;
+            var builder = new HostBuilder();
+
+            Configure(builder);
+
+            builder.ConfigureWebHost(Configure);
+
+            _host = builder.Build();
+            _host.Start();
+
+            _server = _host.GetTestServer();
         }
 
-        public TestServer BuildServer()
+        return _server;
+    }
+
+    public HttpClient BuildClient()
+    {
+        var server = BuildServer();
+        return server.CreateClient();
+    }
+
+    protected virtual void Configure(IHostBuilder builder)
+    {
+        builder.ConfigureServices((services) =>
         {
-            var siteContentRoot = GetApplicationPath(Path.Combine("..", "..", "..", "..", "WebSites"));
+            services.AddLogging((logging) => logging.ClearProviders().AddXUnit(outputHelper));
+            services.AddTransient<IStartupFilter, LocalizationStartupFilter>();
+        });
+    }
 
-            var builder = new WebHostBuilder()
-                .UseEnvironment("Development")
-                .UseContentRoot(siteContentRoot)
-                .UseStartup(_startupType);
+    protected virtual void Configure(IWebHostBuilder builder)
+    {
+        var applicationName = startupType.Assembly.GetName().Name;
 
-            return new TestServer(builder);
+        builder.UseEnvironment("Development")
+               .UseSolutionRelativeContentRoot(Path.Combine("test", "WebSites", applicationName), "*.slnx")
+               .UseStartup(startupType)
+               .UseTestServer();
+    }
+
+    private sealed class LocalizationStartupFilter : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
+        {
+            return (builder) =>
+            {
+                builder.UseMiddleware<LocalizationMiddleware>();
+                next(builder);
+            };
         }
+    }
 
-        public HttpClient BuildClient()
+    private sealed class LocalizationMiddleware(RequestDelegate next)
+    {
+        /// <summary>
+        /// Use a culture that uses different number formatting than the invariant culture.
+        /// </summary>
+        private static readonly CultureInfo French = new("fr-FR");
+
+        public async Task InvokeAsync(HttpContext context)
         {
-            var server = BuildServer();
-            var client = server.CreateClient();
+            var originalCulture = CultureInfo.CurrentCulture;
+            var originalUICulture = CultureInfo.CurrentUICulture;
 
-            return client;
-        }
+            try
+            {
+                CultureInfo.CurrentCulture = French;
+                CultureInfo.CurrentUICulture = French;
 
-        private string GetApplicationPath(string relativePath)
-        {
-            var startupAssembly = _startupType.GetTypeInfo().Assembly;
-            var applicationName = startupAssembly.GetName().Name;
-            var applicationBasePath = System.AppContext.BaseDirectory;
-            return Path.GetFullPath(Path.Combine(applicationBasePath, relativePath, applicationName));
+                await next(context);
+            }
+            finally
+            {
+                CultureInfo.CurrentCulture = originalCulture;
+                CultureInfo.CurrentUICulture = originalUICulture;
+            }
         }
     }
 }
